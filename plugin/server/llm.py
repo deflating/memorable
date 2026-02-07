@@ -1,6 +1,6 @@
 """LLM interface for Memorable.
 
-Calls Claude Sonnet via the `claude` CLI (--print mode).
+Calls Claude via the `claude` CLI (--print mode).
 Uses the same subscription as Claude Code — no separate API key needed.
 
 To swap in a local MLX model later, just change `call_llm()`.
@@ -25,7 +25,7 @@ def call_llm(prompt: str, system: str = "", max_tokens: int = 1024,
         prompt: The user prompt to send.
         system: Optional system prompt (appended via --append-system-prompt).
         max_tokens: Max tokens for response (via --max-tokens).
-        model: Model to use — "sonnet" (default) or "haiku".
+        model: Model to use — "sonnet" (default), "haiku", or "opus".
 
     Returns:
         The model's text response, or "" on error.

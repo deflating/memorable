@@ -23,6 +23,8 @@ def main():
     parser.add_argument("--apply", action="store_true", help="Actually delete garbage (default: dry run)")
     parser.add_argument("--min-priority", type=int, default=7,
                         help="Skip entities at or above this priority (default: 7)")
+    parser.add_argument("--model", type=str, default="sonnet",
+                        help="Model to use for filtering (default: sonnet)")
     args = parser.parse_args()
 
     config = Config()
@@ -71,16 +73,20 @@ def main():
             f"Return ONLY the ones that are real, meaningful named entities worth remembering: "
             f"real people, real projects/products, specific technologies/frameworks, "
             f"real organizations, specific programming languages.\n\n"
+            f"DEDUP: If you see duplicates with different casing or types "
+            f"(e.g. 'spaCy' vs 'Spacy', or 'SQLite (tool)' vs 'SQLite (technology)'), "
+            f"keep ONLY the best-cased version with the most appropriate type. "
+            f"Return the canonical name exactly as it should appear.\n\n"
             f"Candidates:\n{names_list}\n\n"
             f"Return JSON: {{\"keep\": [\"Name1\", \"Name2\", ...]}}\n"
             f"If none are worth keeping, return {{\"keep\": []}}"
         )
 
         print(f"\nFiltering batch {i // batch_size + 1} ({len(batch)} candidates)...")
-        result = call_llm_json(prompt, system="You are a concise entity filter. Return only valid JSON.")
+        result = call_llm_json(prompt, system="You are a concise entity filter. Return only valid JSON.", model=args.model)
 
         if not result or "keep" not in result:
-            print(f"  Sonnet filter failed for this batch — marking all as reject (safe default)")
+            print(f"  LLM filter failed for this batch — marking all as reject (safe default)")
             for c in batch:
                 all_reject.append(c)
             continue
@@ -92,9 +98,55 @@ def main():
             else:
                 all_reject.append(c)
 
-    # Report
+    # Cross-batch dedup: group by lowercase name, keep highest-priority version
     kept_candidates = [c for c in candidates if c["name"].lower() in all_keep]
-    print(f"\n--- SONNET APPROVED ({len(kept_candidates)}) ---")
+    def _casing_score(name: str) -> tuple[int, int, int]:
+        """Higher = better casing. Returns (category, uppercase_count, mid_upper).
+        Prefer mixed case > all upper > all lower, then more uppercase = more intentional,
+        then prefer non-initial uppercase (brand casing like spaCy over Spacy)."""
+        has_upper = any(c.isupper() for c in name)
+        has_lower = any(c.islower() for c in name)
+        upper_count = sum(1 for c in name if c.isupper())
+        mid_upper = sum(1 for c in name[1:] if c.isupper())  # non-initial uppercase
+        if has_upper and has_lower:
+            return (2, upper_count, mid_upper)  # mixed case like "GLiNER", "spaCy"
+        if has_upper:
+            return (1, upper_count, mid_upper)  # all upper like "YAKE"
+        return (0, 0, 0)                        # all lower like "gliner"
+
+    seen_lower: dict[str, dict] = {}
+    dedup_reject = []
+    for c in kept_candidates:
+        key = c["name"].lower()
+        if key in seen_lower:
+            existing = seen_lower[key]
+            # Keep higher priority, then better casing, then longer name
+            replace = False
+            if c.get("priority", 0) > existing.get("priority", 0):
+                replace = True
+            elif c.get("priority", 0) == existing.get("priority", 0):
+                if _casing_score(c["name"]) > _casing_score(existing["name"]):
+                    replace = True
+                elif _casing_score(c["name"]) == _casing_score(existing["name"]) and len(c["name"]) > len(existing["name"]):
+                    replace = True
+            if replace:
+                dedup_reject.append(existing)
+                seen_lower[key] = c
+            else:
+                dedup_reject.append(c)
+        else:
+            seen_lower[key] = c
+
+    kept_candidates = list(seen_lower.values())
+    all_reject.extend(dedup_reject)
+
+    if dedup_reject:
+        print(f"\n--- DEDUP: merging {len(dedup_reject)} duplicate(s) ---")
+        for e in dedup_reject:
+            print(f"  [{e['priority']}] {e['name']} ({e['type']}) → merged into {seen_lower[e['name'].lower()]['name']}")
+
+    # Report
+    print(f"\n--- APPROVED ({len(kept_candidates)}) ---")
     for e in kept_candidates:
         print(f"  [{e['priority']}] {e['name']} ({e['type']})")
 
