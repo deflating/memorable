@@ -57,7 +57,11 @@ def _call_apple_model(prompt: str, instructions: str = "") -> str:
 class TranscriptProcessor:
     def __init__(self, config: Config):
         self.config = config
-        self.db = MemorableDB(Path(config["db_path"]))
+        self.db = MemorableDB(
+            Path(config["db_path"]),
+            sync_url=config.get("sync_url", ""),
+            auth_token=config.get("sync_auth_token", ""),
+        )
         self.min_messages = config.get("min_messages", 15)
         self.min_human_words = config.get("min_human_words", 100)
         self.stale_minutes = config.get("stale_minutes", 15)

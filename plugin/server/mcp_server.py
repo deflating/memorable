@@ -22,7 +22,11 @@ class MemorableMCP:
 
     def __init__(self, config: Config | None = None):
         self.config = config or Config()
-        self.db = MemorableDB(Path(self.config["db_path"]))
+        self.db = MemorableDB(
+            Path(self.config["db_path"]),
+            sync_url=self.config.get("sync_url", ""),
+            auth_token=self.config.get("sync_auth_token", ""),
+        )
 
     def run(self):
         """Main loop: read JSON-RPC from stdin, write responses to stdout."""

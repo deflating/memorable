@@ -15,6 +15,12 @@ DEFAULTS = {
     "db_path": str(Path.home() / ".memorable" / "memorable.db"),
     "transcript_dirs": [str(Path.home() / ".claude" / "projects")],
 
+    # libSQL sync — set sync_url to enable embedded replica mode
+    # When set, db_path becomes the local replica and syncs with the server
+    # When unset, db_path is used as a plain local SQLite database
+    "sync_url": "",  # e.g. "http://192.168.68.58:8081"
+    "sync_auth_token": "",  # JWT or empty for no auth
+
     # LLMLingua compression
     "compression_rate_storage": 0.50,
 

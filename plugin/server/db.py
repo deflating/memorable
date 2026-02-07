@@ -1,44 +1,105 @@
 """SQLite database layer for Memorable.
 
-Stores: sessions (with compressed transcripts at two tiers),
-knowledge graph (entities + relationships), context seeds,
-and processing queue.
+Uses libsql_experimental for embedded replica support — each machine
+keeps a local SQLite file that syncs with a central sqld server.
+When sync_url is not configured, falls back to plain local SQLite.
+
+Stores: sessions (with compressed transcripts), knowledge graph
+(entities + relationships), context seeds, and processing queue.
 """
 
-import sqlite3
 import json
 import time
 from pathlib import Path
-from contextlib import contextmanager
 
+try:
+    import libsql_experimental as libsql
+    HAS_LIBSQL = True
+except ImportError:
+    HAS_LIBSQL = False
 
 DEFAULT_DB_PATH = Path.home() / ".memorable" / "memorable.db"
 
 
+def _rows_to_dicts(cursor) -> list[dict]:
+    """Convert cursor results to list of dicts using cursor.description."""
+    if not cursor.description:
+        return []
+    cols = [d[0] for d in cursor.description]
+    return [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+
+def _row_to_dict(cursor) -> dict | None:
+    """Fetch one row as a dict."""
+    if not cursor.description:
+        return None
+    cols = [d[0] for d in cursor.description]
+    row = cursor.fetchone()
+    return dict(zip(cols, row)) if row else None
+
+
 class MemorableDB:
-    def __init__(self, db_path: Path = DEFAULT_DB_PATH):
+    def __init__(self, db_path: Path = DEFAULT_DB_PATH,
+                 sync_url: str = "", auth_token: str = ""):
         self.db_path = db_path
+        self.sync_url = sync_url
+        self.auth_token = auth_token
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 
-    @contextmanager
-    def _conn(self):
-        conn = sqlite3.connect(str(self.db_path))
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
+    def _connect(self):
+        """Open a connection — embedded replica if sync_url is set, local otherwise."""
+        if self.sync_url and HAS_LIBSQL:
+            kwargs = {"sync_url": self.sync_url}
+            if self.auth_token:
+                kwargs["auth_token"] = self.auth_token
+            conn = libsql.connect(str(self.db_path), **kwargs)
+        elif HAS_LIBSQL:
+            conn = libsql.connect(str(self.db_path))
+        else:
+            import sqlite3
+            conn = sqlite3.connect(str(self.db_path))
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+        return conn
+
+    def _sync(self, conn):
+        """Sync with server if this is an embedded replica."""
+        if self.sync_url and hasattr(conn, "sync"):
+            try:
+                conn.sync()
+            except Exception:
+                pass  # offline — local replica still works
+
+    def _execute(self, callback):
+        """Execute a callback with a connection, handling sync and cleanup."""
+        conn = self._connect()
         try:
-            yield conn
+            self._sync(conn)
+            result = callback(conn)
             conn.commit()
+            self._sync(conn)
+            return result
         except Exception:
             conn.rollback()
             raise
         finally:
             conn.close()
 
+    def _query(self, callback):
+        """Execute a read-only callback — syncs before reading."""
+        conn = self._connect()
+        try:
+            self._sync(conn)
+            return callback(conn)
+        finally:
+            conn.close()
+
     def _init_schema(self):
-        with self._conn() as conn:
+        def init(conn):
             conn.executescript(SCHEMA)
+        self._execute(init)
 
     # ── Sessions ──────────────────────────────────────────────
 
@@ -46,7 +107,7 @@ class MemorableDB:
                       summary: str, header: str, compressed_50: str,
                       source_path: str = "", message_count: int = 0,
                       word_count: int = 0, human_word_count: int = 0) -> int:
-        with self._conn() as conn:
+        def do(conn):
             cur = conn.execute(
                 """INSERT INTO sessions
                    (transcript_id, date, title, summary, header, compressed_50,
@@ -56,11 +117,11 @@ class MemorableDB:
                  source_path, message_count, word_count, human_word_count)
             )
             return cur.lastrowid
+        return self._execute(do)
 
     def search_sessions(self, query: str, limit: int = 10) -> list[dict]:
-        """Keyword search across summaries, compressed transcripts, and titles."""
-        with self._conn() as conn:
-            rows = conn.execute(
+        def do(conn):
+            cur = conn.execute(
                 """SELECT id, transcript_id, date, title, summary, header,
                           compressed_50, message_count, word_count
                    FROM sessions
@@ -68,13 +129,14 @@ class MemorableDB:
                    ORDER BY date DESC
                    LIMIT ?""",
                 (f"%{query}%", f"%{query}%", f"%{query}%", limit)
-            ).fetchall()
-            return [dict(r) for r in rows]
+            )
+            return _rows_to_dicts(cur)
+        return self._query(do)
 
     def get_recent_sessions(self, days: int = 5, limit: int = 20) -> list[dict]:
-        with self._conn() as conn:
+        def do(conn):
             cutoff = time.time() - (days * 86400)
-            rows = conn.execute(
+            cur = conn.execute(
                 """SELECT id, transcript_id, date, title, summary, header,
                           message_count, word_count
                    FROM sessions
@@ -82,27 +144,28 @@ class MemorableDB:
                    ORDER BY date DESC
                    LIMIT ?""",
                 (cutoff, limit)
-            ).fetchall()
-            return [dict(r) for r in rows]
+            )
+            return _rows_to_dicts(cur)
+        return self._query(do)
 
     def get_recent_summaries(self, limit: int = 10) -> list[dict]:
-        """Get recent session summaries for startup seed."""
-        with self._conn() as conn:
-            rows = conn.execute(
+        def do(conn):
+            cur = conn.execute(
                 """SELECT id, date, title, summary, header,
                           message_count, word_count
                    FROM sessions
                    ORDER BY date DESC
                    LIMIT ?""",
                 (limit,)
-            ).fetchall()
-            return [dict(r) for r in rows]
+            )
+            return _rows_to_dicts(cur)
+        return self._query(do)
 
     # ── Knowledge Graph ───────────────────────────────────────
 
     def add_entity(self, name: str, entity_type: str, description: str = "",
                    priority: int = 5, metadata: dict | None = None) -> int:
-        with self._conn() as conn:
+        def do(conn):
             cur = conn.execute(
                 """INSERT INTO kg_entities (name, type, description, priority, metadata)
                    VALUES (?, ?, ?, ?, ?)
@@ -118,14 +181,14 @@ class MemorableDB:
                  json.dumps(metadata or {}), time.time())
             )
             return cur.lastrowid
+        return self._execute(do)
 
     def add_relationship(self, source_name: str, source_type: str,
                          rel_type: str, target_name: str, target_type: str,
                          description: str = "", confidence: float = 1.0) -> int:
-        with self._conn() as conn:
-            # Get or create entities
-            source_id = self._get_or_create_entity(conn, source_name, source_type)
-            target_id = self._get_or_create_entity(conn, target_name, target_type)
+        def do(conn):
+            source_id = self._get_or_create_entity_inner(conn, source_name, source_type)
+            target_id = self._get_or_create_entity_inner(conn, target_name, target_type)
             cur = conn.execute(
                 """INSERT INTO kg_relationships
                    (source_id, target_id, rel_type, description, confidence)
@@ -133,14 +196,15 @@ class MemorableDB:
                 (source_id, target_id, rel_type, description, confidence)
             )
             return cur.lastrowid
+        return self._execute(do)
 
-    def _get_or_create_entity(self, conn, name: str, entity_type: str) -> int:
+    def _get_or_create_entity_inner(self, conn, name: str, entity_type: str) -> int:
         row = conn.execute(
             "SELECT id FROM kg_entities WHERE name = ? AND type = ?",
             (name, entity_type)
         ).fetchone()
         if row:
-            return row["id"]
+            return row[0]
         cur = conn.execute(
             "INSERT INTO kg_entities (name, type) VALUES (?, ?)",
             (name, entity_type)
@@ -150,10 +214,9 @@ class MemorableDB:
     def query_kg(self, entity: str | None = None, entity_type: str | None = None,
                  rel_type: str | None = None, min_priority: int = 0,
                  limit: int = 50) -> list[dict]:
-        with self._conn() as conn:
+        def do(conn):
             if entity:
-                # Get entity and its relationships
-                rows = conn.execute(
+                cur = conn.execute(
                     """SELECT e.name, e.type, e.description, e.priority, e.metadata,
                               r.rel_type, t.name as target_name, t.type as target_type,
                               r.description as rel_description
@@ -164,63 +227,65 @@ class MemorableDB:
                        ORDER BY e.priority DESC
                        LIMIT ?""",
                     (f"%{entity}%", min_priority, limit)
-                ).fetchall()
+                )
             elif entity_type:
-                rows = conn.execute(
+                cur = conn.execute(
                     """SELECT name, type, description, priority, metadata
                        FROM kg_entities
                        WHERE type = ? AND priority >= ?
                        ORDER BY priority DESC
                        LIMIT ?""",
                     (entity_type, min_priority, limit)
-                ).fetchall()
+                )
             else:
-                rows = conn.execute(
+                cur = conn.execute(
                     """SELECT name, type, description, priority, metadata
                        FROM kg_entities
                        WHERE priority >= ?
                        ORDER BY priority DESC
                        LIMIT ?""",
                     (min_priority, limit)
-                ).fetchall()
-            return [dict(r) for r in rows]
+                )
+            return _rows_to_dicts(cur)
+        return self._query(do)
 
     def get_sacred_facts(self) -> list[dict]:
-        """Get all priority-10 (sacred, immutable) facts."""
-        with self._conn() as conn:
-            rows = conn.execute(
+        def do(conn):
+            cur = conn.execute(
                 """SELECT name, type, description, metadata
                    FROM kg_entities WHERE priority = 10
                    ORDER BY name"""
-            ).fetchall()
-            return [dict(r) for r in rows]
+            )
+            return _rows_to_dicts(cur)
+        return self._query(do)
 
     # ── Context Seeds ─────────────────────────────────────────
 
     def store_context_seed(self, session_id: str, seed_content: str,
                            seed_type: str = "live") -> int:
-        """Store a context seed (live mid-session or startup)."""
-        with self._conn() as conn:
+        def do(conn):
             cur = conn.execute(
                 """INSERT INTO context_seeds (session_id, seed_content, seed_type)
                    VALUES (?, ?, ?)""",
                 (session_id, seed_content, seed_type)
             )
             return cur.lastrowid
+        return self._execute(do)
 
     def get_last_context_seed(self) -> dict | None:
-        with self._conn() as conn:
-            row = conn.execute(
+        def do(conn):
+            cur = conn.execute(
                 """SELECT session_id, seed_content, seed_type, created_at
                    FROM context_seeds
                    ORDER BY created_at DESC LIMIT 1"""
-            ).fetchone()
-            return dict(row) if row else None
+            )
+            return _row_to_dict(cur)
+        return self._query(do)
 
     # ── Processing Queue ──────────────────────────────────────
 
     def queue_transcript(self, transcript_path: str, file_hash: str) -> int:
-        with self._conn() as conn:
+        def do(conn):
             cur = conn.execute(
                 """INSERT OR IGNORE INTO processing_queue
                    (transcript_path, file_hash, status)
@@ -228,58 +293,58 @@ class MemorableDB:
                 (transcript_path, file_hash)
             )
             return cur.lastrowid
+        return self._execute(do)
 
     def get_pending_transcripts(self, limit: int = 10) -> list[dict]:
-        with self._conn() as conn:
-            rows = conn.execute(
+        def do(conn):
+            cur = conn.execute(
                 """SELECT id, transcript_path, file_hash
                    FROM processing_queue
                    WHERE status = 'pending'
                    ORDER BY created_at ASC
                    LIMIT ?""",
                 (limit,)
-            ).fetchall()
-            return [dict(r) for r in rows]
+            )
+            return _rows_to_dicts(cur)
+        return self._query(do)
 
     def mark_processed(self, queue_id: int, session_id: int | None = None,
                        error: str | None = None):
         status = "error" if error else "done"
-        with self._conn() as conn:
+        def do(conn):
             conn.execute(
                 """UPDATE processing_queue
                    SET status = ?, session_id = ?, error = ?, processed_at = ?
                    WHERE id = ?""",
                 (status, session_id, error, time.time(), queue_id)
             )
+        self._execute(do)
 
     def is_transcript_processed(self, file_hash: str) -> bool:
-        with self._conn() as conn:
+        def do(conn):
             row = conn.execute(
                 "SELECT id FROM processing_queue WHERE file_hash = ? AND status = 'done'",
                 (file_hash,)
             ).fetchone()
             return row is not None
+        return self._query(do)
 
     # ── Stats ─────────────────────────────────────────────────
 
     def get_stats(self) -> dict:
-        with self._conn() as conn:
-            sessions = conn.execute("SELECT COUNT(*) as n FROM sessions").fetchone()["n"]
-            entities = conn.execute("SELECT COUNT(*) as n FROM kg_entities").fetchone()["n"]
-            relationships = conn.execute("SELECT COUNT(*) as n FROM kg_relationships").fetchone()["n"]
-            sacred = conn.execute("SELECT COUNT(*) as n FROM kg_entities WHERE priority = 10").fetchone()["n"]
-            seeds = conn.execute("SELECT COUNT(*) as n FROM context_seeds").fetchone()["n"]
-            pending = conn.execute("SELECT COUNT(*) as n FROM processing_queue WHERE status = 'pending'").fetchone()["n"]
-            total_words = conn.execute("SELECT COALESCE(SUM(word_count), 0) as n FROM sessions").fetchone()["n"]
+        def do(conn):
+            def count(sql):
+                return conn.execute(sql).fetchone()[0]
             return {
-                "sessions": sessions,
-                "kg_entities": entities,
-                "kg_relationships": relationships,
-                "sacred_facts": sacred,
-                "context_seeds": seeds,
-                "pending_transcripts": pending,
-                "total_words_processed": total_words,
+                "sessions": count("SELECT COUNT(*) FROM sessions"),
+                "kg_entities": count("SELECT COUNT(*) FROM kg_entities"),
+                "kg_relationships": count("SELECT COUNT(*) FROM kg_relationships"),
+                "sacred_facts": count("SELECT COUNT(*) FROM kg_entities WHERE priority = 10"),
+                "context_seeds": count("SELECT COUNT(*) FROM context_seeds"),
+                "pending_transcripts": count("SELECT COUNT(*) FROM processing_queue WHERE status = 'pending'"),
+                "total_words_processed": count("SELECT COALESCE(SUM(word_count), 0) FROM sessions"),
             }
+        return self._query(do)
 
 
 # ── Schema ────────────────────────────────────────────────────
