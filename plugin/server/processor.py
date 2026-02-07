@@ -29,20 +29,32 @@ _yake_extractor = None
 _gliner_model = None
 
 
-def _summarize_with_haiku(conversation_text: str, model: str = "haiku") -> str:
-    """Summarize a conversation using claude -p (one-shot CLI, no persistent session)."""
+def _summarize_with_haiku(fact_sheet: str, model: str = "haiku") -> str:
+    """Generate a narrative session summary from a structured fact sheet.
+
+    Instead of sending raw conversation text, we send a pre-built fact sheet
+    containing: opening request, actions taken, errors, user quotes, and ending.
+    This produces specific, narrative summaries instead of generic paragraphs.
+    """
     system_prompt = (
-        "You are a transcript summarizer. Output ONLY a summary, nothing else. "
-        "No preamble, no meta-commentary, no markdown headers, no '---' dividers. "
-        "Write 2-4 short paragraphs. Cover: what was worked on, key decisions, "
-        "problems encountered, and current status. Be specific with names of "
-        "tools, files, and technical details. Past tense, third person."
+        "You are a session note writer. You receive a FACT SHEET and output "
+        "EXACTLY ONE PARAGRAPH of narrative prose. Nothing else.\n\n"
+        "RULES:\n"
+        "- Past tense, third person. The user's name is Matt.\n"
+        "- Be SPECIFIC: mention file names, commands, error messages from the facts.\n"
+        "- Capture the ARC: what was attempted, what happened, how it ended.\n"
+        "- If quotes show emotion (frustration, humor, excitement), weave it in.\n"
+        "- Start directly with the action: 'Matt wanted to...' or 'Matt asked about...'\n"
+        "- If Signal messages, this was a chat via Signal messaging.\n"
+        "- NO preamble, NO commentary, NO questions, NO bullet points, NO headers.\n"
+        "- Do NOT address the user. Do NOT ask clarifying questions.\n"
+        "- Output ONLY the summary paragraph. 4-8 sentences."
     )
     try:
         result = subprocess.run(
             ["claude", "-p", "--model", model, "--no-session-persistence",
              "--system-prompt", system_prompt, "--tools", ""],
-            input=conversation_text,
+            input=fact_sheet,
             capture_output=True,
             text=True,
             timeout=120,
@@ -51,15 +63,44 @@ def _summarize_with_haiku(conversation_text: str, model: str = "haiku") -> str:
             text = result.stdout.strip()
             # Strip preamble lines — Haiku sometimes narrates before summarizing
             lines = text.split('\n')
-            while lines and any(lines[0].lower().startswith(p) for p in [
-                "i'll ", "i will ", "here's ", "here is ", "let me ", "sure",
-                "i see the session", "i'm a transcript", "i'm the transcript",
-                "looking at the full session", "now i understand",
-                "based on the ", "no observation",
-                "---", "##",
-            ]):
+            while lines and (
+                lines[0].strip() == "" or
+                any(lines[0].lower().startswith(p) for p in [
+                    "i'll ", "i will ", "here's ", "here is ", "let me ", "sure",
+                    "i see the session", "i'm a transcript", "i'm the transcript",
+                    "i've reviewed", "i see the entire",
+                    "looking at the full session", "now i understand",
+                    "based on the ", "no observation",
+                    "i appreciate", "i need to ", "i want to ",
+                    "before i ", "i'm looking at",
+                    "perfect", "okay", "ok,", "right",
+                    "---", "##", "**",
+                ])
+            ):
                 lines.pop(0)
-            return '\n'.join(lines).strip() or text
+            # If Haiku went off-script (multiple paragraphs with questions/bullets),
+            # try to extract just the narrative paragraph
+            text = '\n'.join(lines).strip()
+            # If multiple paragraphs remain and one starts with "Matt",
+            # use that — it's likely the actual summary
+            if '\n\n' in text:
+                paragraphs = text.split('\n\n')
+                matt_paras = [p for p in paragraphs
+                              if p.strip().startswith('Matt ') and len(p.strip()) > 100]
+                if matt_paras:
+                    text = matt_paras[0].strip()
+            if not text:
+                text = result.stdout.strip()
+            # If output has bullet points or numbered lists, it went off-script.
+            # Find the longest non-bullet paragraph and use that.
+            if '\n1.' in text or '\n- ' in text or '\n**' in text:
+                paragraphs = text.split('\n\n')
+                narrative = [p for p in paragraphs
+                             if not p.strip().startswith(('1.', '2.', '- ', '**', '#'))
+                             and len(p.strip()) > 100]
+                if narrative:
+                    text = max(narrative, key=len)
+            return text
         error = result.stderr.strip() or f"Exit code {result.returncode}"
         return f"[Haiku summary failed: {error}]"
     except subprocess.TimeoutExpired:
@@ -199,8 +240,13 @@ class TranscriptProcessor:
         conversation_text = self._format_conversation(messages)
         session_date = self._get_session_date(path)
 
-        # Step 1: Haiku summary via claude -p
-        summary_text = _summarize_with_haiku(conversation_text, model=self.summary_model)
+        # Step 0: Extract structured session data from JSONL (mechanical, no LLM)
+        from .notes import extract_session_data, build_fact_sheet, compose_session_note
+        note_data = extract_session_data(path)
+
+        # Step 1: Build fact sheet and send to Haiku for narrative summary
+        fact_sheet = build_fact_sheet(note_data)
+        summary_text = _summarize_with_haiku(fact_sheet, model=self.summary_model)
         print(f"    Summary: {summary_text[:80]}...")
 
         # Step 2: Apple model generates emoji header from summary
@@ -223,8 +269,6 @@ class TranscriptProcessor:
         # Step 4: Generate structured session notes from JSONL
         note_result = {}
         try:
-            from .notes import extract_session_data, compose_session_note
-            note_data = extract_session_data(path)
             note_result = compose_session_note(
                 data=note_data,
                 summary_text=summary_text,
@@ -424,6 +468,9 @@ class TranscriptProcessor:
         human_msgs = [m["text"] for m in messages if m["role"] == "user"][:8]
         for msg in human_msgs:
             text = msg.strip()
+            # Strip "Signal: " prefix from forwarded messages
+            if text.startswith("Signal: "):
+                text = text[len("Signal: "):]
             # Strip XML/HTML-like tags and markdown bold
             text = re.sub(r'<[^>]+>', '', text).strip()
             text = re.sub(r'\*\*', '', text).strip()

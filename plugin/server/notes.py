@@ -213,6 +213,216 @@ def extract_session_data(jsonl_path: Path) -> dict:
     }
 
 
+def build_fact_sheet(data: dict) -> str:
+    """Build a structured fact sheet from extracted session data.
+
+    This is sent to Haiku instead of raw conversation text, producing
+    much better narrative summaries. The fact sheet contains:
+    - What the user initially asked for
+    - Key actions taken (deduplicated, grouped)
+    - Errors encountered
+    - Files changed
+    - Salient user quotes (emotional arc)
+    - How the session ended
+    """
+    sections = []
+
+    # 1. Opening request — what did the user want?
+    opening = _find_opening_request(data["user_messages"])
+    if opening:
+        sections.append(f"OPENING REQUEST:\n{opening}")
+
+    # 2. Action timeline — what happened, in order
+    actions = data.get("action_descriptions", [])
+    if actions:
+        # Deduplicate consecutive similar actions
+        deduped = _deduplicate_actions(actions)
+        # Take a representative sample (first few, middle, last few)
+        sampled = _sample_actions(deduped, max_items=20)
+        sections.append("KEY ACTIONS (chronological):\n" + "\n".join(f"- {a}" for a in sampled))
+
+    # 3. Files changed
+    files = data.get("files_touched", [])
+    if files:
+        sections.append("FILES TOUCHED:\n" + ", ".join(files[:12]))
+
+    # 4. Tool usage summary
+    tc = data.get("tool_counts", {})
+    if tc:
+        parts = []
+        edits = tc.get("Edit", 0) + tc.get("Write", 0)
+        reads = tc.get("Read", 0)
+        searches = tc.get("Grep", 0) + tc.get("Glob", 0)
+        bash = tc.get("Bash", 0)
+        web = tc.get("WebSearch", 0) + tc.get("WebFetch", 0)
+        if edits: parts.append(f"{edits} file edits")
+        if reads: parts.append(f"{reads} file reads")
+        if searches: parts.append(f"{searches} code searches")
+        if bash: parts.append(f"{bash} shell commands")
+        if web: parts.append(f"{web} web lookups")
+        if parts:
+            sections.append("TOOL USAGE: " + ", ".join(parts))
+
+    # 5. Errors encountered
+    errors = data.get("errors", [])
+    if errors:
+        error_lines = []
+        for e in errors[:5]:
+            cmd = e["command"][:80]
+            err = e["error"][:100]
+            error_lines.append(f"- {cmd} → {err}")
+        sections.append("ERRORS HIT:\n" + "\n".join(error_lines))
+
+    # 6. Salient user quotes (emotional arc + context)
+    quotes = _select_fact_sheet_quotes(data["user_messages"], max_quotes=8)
+    if quotes:
+        sections.append("USER QUOTES (verbatim, chronological):\n" + "\n".join(f'- "{q}"' for q in quotes))
+
+    # 7. How it ended — last few substantive exchanges
+    ending = _find_session_ending(data["user_messages"], data["assistant_messages"])
+    if ending:
+        sections.append(f"SESSION ENDING:\n{ending}")
+
+    # 8. Stats
+    sections.append(
+        f"STATS: {data['message_count']} messages, "
+        f"{data['user_word_count']} user words, "
+        f"{data['total_word_count']} total words"
+    )
+
+    return "\n\n".join(sections)
+
+
+def _find_opening_request(user_messages: list[dict]) -> str | None:
+    """Find the first substantive user message that sets the session goal."""
+    for msg in user_messages[:8]:
+        text = msg["text"].strip()
+        words = text.split()
+        # Skip very short greetings
+        if len(words) < 5:
+            continue
+        # Skip system/hook artifacts
+        if any(text.startswith(p) for p in [
+            "You are", "ToolSearch", "Read", "Caveat:", "PROGRESS SUMMARY",
+            "Claude's Full Response", "Contents of", "Base directory",
+        ]):
+            continue
+        # Skip pasted content
+        if text.count("\n") > 10 or text.count("→") > 3:
+            continue
+        # Return first substantive message, cleaned
+        first_line = text.split("\n")[0].strip()
+        return first_line[:300]
+    return None
+
+
+def _deduplicate_actions(actions: list[str]) -> list[str]:
+    """Remove consecutive duplicates and repetitive patterns."""
+    deduped = []
+    prev = ""
+    for action in actions:
+        # Collapse repeated similar reads/searches
+        key = action.split()[0] if action else ""  # first word: Read, Edited, Searched...
+        prev_key = prev.split()[0] if prev else ""
+        if key == prev_key and key in ("Read", "Searched"):
+            # Keep if different target
+            if action != prev:
+                deduped.append(action)
+        else:
+            deduped.append(action)
+        prev = action
+    return deduped
+
+
+def _sample_actions(actions: list[str], max_items: int = 20) -> list[str]:
+    """Sample actions: keep first few, last few, and evenly spaced middle."""
+    if len(actions) <= max_items:
+        return actions
+    head = actions[:6]
+    tail = actions[-4:]
+    middle_count = max_items - len(head) - len(tail)
+    middle = actions[6:-4]
+    step = max(1, len(middle) // middle_count)
+    middle_sampled = middle[::step][:middle_count]
+    return head + middle_sampled + tail
+
+
+def _select_fact_sheet_quotes(user_messages: list[dict], max_quotes: int = 8) -> list[str]:
+    """Select diverse user quotes for the fact sheet — captures emotional arc.
+
+    Picks: first request, questions, emotional moments, turning points, ending.
+    """
+    candidates = []
+    for i, msg in enumerate(user_messages):
+        text = msg["text"].strip()
+        words = text.split()
+        if len(words) < 4:
+            continue
+        # Skip system artifacts
+        if any(text.startswith(p) for p in [
+            "You are", "ToolSearch", "Read", "Caveat:", "PROGRESS SUMMARY",
+            "Claude's Full Response", "Contents of",
+        ]):
+            continue
+        # Skip very long pastes
+        if len(words) > 80 or text.count("\n") > 5:
+            continue
+
+        score = 0.0
+        text_lower = text.lower()
+
+        # Questions
+        if "?" in text:
+            score += 2.0
+        # Emotional words
+        emotion_count = sum(1 for w in words if w.lower().rstrip(".,!?") in _EMOTION_WORDS)
+        score += emotion_count * 1.5
+        # Turning phrases
+        for phrase in _TURNING_PHRASES:
+            if phrase in text_lower:
+                score += 2.0
+                break
+        # Exclamations
+        if "!" in text:
+            score += 1.0
+        # Position: first substantive message
+        if i <= 2:
+            score += 1.5
+        # Position: last messages
+        if i >= len(user_messages) - 3:
+            score += 1.0
+        # Length bonus for substantive messages
+        if 10 < len(words) < 40:
+            score += 1.0
+
+        if score > 0:
+            first_line = text.split("\n")[0][:200]
+            candidates.append((score, i, first_line))
+
+    # Sort by score, take top N
+    candidates.sort(key=lambda x: -x[0])
+    selected = candidates[:max_quotes]
+    # Re-sort by position for chronological order
+    selected.sort(key=lambda x: x[1])
+    return [c[2] for c in selected]
+
+
+def _find_session_ending(user_messages: list[dict], assistant_messages: list[dict]) -> str | None:
+    """Capture the final exchange to understand how the session concluded."""
+    parts = []
+    # Last 2 user messages
+    for msg in user_messages[-2:]:
+        text = msg["text"].split("\n")[0][:150]
+        if len(text.split()) >= 2:
+            parts.append(f'User: "{text}"')
+    # Last assistant message
+    for msg in assistant_messages[-1:]:
+        text = msg["text"].split("\n")[0][:150]
+        if len(text.split()) >= 3:
+            parts.append(f'Claude: "{text}"')
+    return "\n".join(parts) if parts else None
+
+
 def _attach_result_to_tool(tool_calls: list, tool_use_id: str, result: str):
     """Attach a tool_result back to its tool_use by ID."""
     for tc in reversed(tool_calls):
@@ -521,8 +731,19 @@ def compose_session_note(
     # Build tags from header (already emoji-tagged by AFM)
     tags = _header_to_tags(header)
 
-    # Generate Notes for Future Me
-    notes = _generate_future_notes(data, summary_text)
+    # Use Haiku for quote annotations + insightful Notes for Future Me
+    # This is ONE additional Haiku call — produces both outputs
+    enriched = _haiku_enrich_notes(key_moments, summary_text, data)
+    if enriched:
+        # Apply annotations to key moments
+        for moment in key_moments:
+            annotation = enriched.get("annotations", {}).get(moment["text"], "")
+            if annotation:
+                moment["annotation"] = annotation
+        # Use Haiku's insightful notes instead of mechanical ones
+        notes = enriched.get("notes", []) or _generate_future_notes(data, summary_text)
+    else:
+        notes = _generate_future_notes(data, summary_text)
 
     # Format the complete note
     note_content = _format_note(
@@ -541,6 +762,89 @@ def compose_session_note(
         "tags": json.dumps(tags),
         "continuity": continuity,
         "key_moments": key_moments,
+    }
+
+
+def _haiku_enrich_notes(key_moments: list[dict], summary_text: str, data: dict) -> dict | None:
+    """Enrich key moments with annotations and generate insightful notes via Haiku.
+
+    ONE Haiku call that produces:
+    1. Short annotations for each quote (3-8 words capturing why the quote matters)
+    2. 3-4 insightful "Notes for Future Me" bullets with bold labels
+
+    Returns dict with 'annotations' (quote_text -> annotation) and 'notes' (list of strings).
+    Returns None on failure, falling back to mechanical notes.
+    """
+    if not key_moments or not summary_text:
+        return None
+
+    from .llm import call_llm_json
+
+    # Build the quotes section
+    quotes_block = []
+    for i, m in enumerate(key_moments):
+        speaker = "Matt" if m["role"] == "user" else "Claude"
+        quotes_block.append(f'{i+1}. {speaker}: "{m["text"]}"')
+    quotes_text = "\n".join(quotes_block)
+
+    # Build context from errors and files
+    context_parts = []
+    errors = data.get("errors", [])
+    if errors:
+        context_parts.append(f"Errors hit: {len(errors)}")
+        for e in errors[:3]:
+            context_parts.append(f"  - {e['command'][:60]} → {e['error'][:80]}")
+    files = data.get("files_touched", [])
+    if files:
+        context_parts.append(f"Files: {', '.join(files[:8])}")
+    context_text = "\n".join(context_parts)
+
+    prompt = (
+        f"SUMMARY:\n{summary_text}\n\n"
+        f"KEY QUOTES:\n{quotes_text}\n\n"
+        f"CONTEXT:\n{context_text}\n\n"
+        f"Respond with JSON only."
+    )
+
+    system = (
+        "You annotate conversation quotes and write follow-up notes.\n\n"
+        "Given a session summary and selected quotes, output JSON with:\n"
+        "1. \"annotations\": object mapping each quote's EXACT text to a 3-8 word "
+        "annotation capturing WHY it matters (emotional beat, turning point, humor). "
+        "Examples: \"the moment the simple path vanished\", \"finding humor in the absurdity\", "
+        "\"a vulnerable admission of complexity\", \"resigned recognition\".\n"
+        "2. \"notes\": array of 3-4 bullet strings for 'Notes for Future Me'. Each bullet "
+        "starts with a **Bold Label:** then detail. Labels like: **Unfinished:**, **Context:**, "
+        "**Tech Detail:**, **Key Decision:**, **Next Step:**, **Relational:**\n"
+        "Notes should capture: what's unfinished, emotional/relational context, "
+        "technical details worth remembering, and status of things that changed.\n\n"
+        "The user is Matt. Write notes as if Claude is leaving them for a future Claude instance.\n"
+        "Output ONLY valid JSON. No markdown fences, no commentary."
+    )
+
+    result = call_llm_json(prompt, system=system, model="haiku")
+    if not result:
+        return None
+
+    # Validate structure
+    annotations = result.get("annotations", {})
+    notes = result.get("notes", [])
+
+    if not isinstance(annotations, dict) or not isinstance(notes, list):
+        return None
+
+    # Clean up notes — ensure they have bold labels
+    cleaned_notes = []
+    for note in notes[:5]:
+        if isinstance(note, str) and note.strip():
+            # Ensure it starts with **Label:**
+            if not note.strip().startswith("**"):
+                note = f"**Note:** {note}"
+            cleaned_notes.append(note.strip())
+
+    return {
+        "annotations": annotations,
+        "notes": cleaned_notes or None,
     }
 
 
@@ -810,7 +1114,11 @@ def _format_note(
         for moment in key_moments:
             speaker = "Matt" if moment["role"] == "user" else "Claude"
             text = moment["text"]
-            lines.append(f'**{speaker}:** "{text}"')
+            annotation = moment.get("annotation", "")
+            if annotation:
+                lines.append(f'**{speaker}:** "{text}" — *{annotation}*')
+            else:
+                lines.append(f'**{speaker}:** "{text}"')
             lines.append("")
 
     # Notes for Future Me
