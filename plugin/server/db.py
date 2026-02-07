@@ -167,6 +167,20 @@ class MemorableDB:
             return _rows_to_dicts(cur)
         return self._query(do)
 
+    def get_all_session_texts(self, limit: int = 500) -> list[dict]:
+        """Get id + title + summary + header for all sessions (for semantic search)."""
+        def do(conn):
+            cur = conn.execute(
+                """SELECT id, transcript_id, date, title, summary, header,
+                          compressed_50, message_count, word_count
+                   FROM sessions
+                   ORDER BY date DESC
+                   LIMIT ?""",
+                (limit,)
+            )
+            return _rows_to_dicts(cur)
+        return self._query(do)
+
     def get_session_by_transcript_id(self, transcript_id: str) -> dict | None:
         def do(conn):
             cur = conn.execute(

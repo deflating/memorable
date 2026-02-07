@@ -2,7 +2,7 @@
 
 Exposes tools to Claude Code for memory management:
 - get_startup_seed: recency-gradient context for session startup
-- search_sessions: keyword search over compressed transcripts
+- search_sessions: hybrid keyword + semantic search over sessions
 - record_significant: flag important moments mid-conversation
 - query_kg: structured knowledge graph queries
 - get_system_status: processing queue, KG stats, health
@@ -171,25 +171,57 @@ class MemorableMCP:
         return "\n".join(parts)
 
     def _tool_search_sessions(self, args: dict) -> str:
+        """Hybrid search: keyword (SQL LIKE) + semantic (Apple NLEmbedding)."""
         query = args.get("query", "")
         limit = args.get("limit", 10)
         if not query:
             return "Please provide a search query."
 
-        results = self.db.search_sessions(query, limit=limit)
+        scored = []
+
+        def _semantic_score(dist: float) -> float:
+            """Normalize NLEmbedding distance to 0-1 similarity score.
+
+            Distances typically range 0.8 (very similar) to 1.5 (unrelated).
+            """
+            return max(0.0, (1.5 - dist) / 0.7)
+
+        # ── Keyword search (SQL LIKE) — keyword matches get a bonus ──
+        keyword_results = self.db.search_sessions(query, limit=limit * 2)
+        seen_ids = set()
+        for s in keyword_results:
+            seen_ids.add(s["id"])
+            text = f"{s['title']}. {s.get('summary', '')} {s.get('header', '')}"
+            dist = cosine_distance(query, text)
+            score = 0.6 * _semantic_score(dist) + 0.4
+            scored.append((score, s))
+
+        # ── Semantic-only pass on all sessions ──
+        all_sessions = self.db.get_all_session_texts(limit=500)
+        for s in all_sessions:
+            if s["id"] in seen_ids:
+                continue
+            text = f"{s['title']}. {s.get('summary', '')} {s.get('header', '')}"
+            dist = cosine_distance(query, text)
+            sem = _semantic_score(dist)
+            if sem > 0.15:
+                scored.append((sem, s))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        results = scored[:limit]
+
         if not results:
             return f"No sessions found matching '{query}'."
 
         lines = [f"Found {len(results)} session(s) matching '{query}':\n"]
-        for s in results:
-            lines.append(f"### {s['title']} ({s['date']})")
-            lines.append(f"Messages: {s['message_count']} | Words: {s['word_count']}")
+        for score, s in results:
+            lines.append(f"### {s['title']} ({s['date']}) [score: {score:.2f}]")
+            lines.append(f"Messages: {s.get('message_count', 0)} | Words: {s.get('word_count', 0)}")
             if s.get("header"):
                 lines.append(s["header"])
             if s.get("summary"):
                 lines.append(s["summary"])
-            else:
-                # Fall back to compressed transcript preview
+            elif s.get("compressed_50"):
                 preview = s["compressed_50"][:800]
                 if len(s["compressed_50"]) > 800:
                     preview += "..."
@@ -209,6 +241,9 @@ class MemorableMCP:
 
         scored = []
 
+        def _semantic_score(dist: float) -> float:
+            return max(0.0, (1.5 - dist) / 0.7)
+
         # ── Observations: keyword + semantic ──
         if not obs_type or obs_type != "prompt":
             keyword_results = self.db.search_observations_keyword(query, limit=limit * 2)
@@ -216,7 +251,7 @@ class MemorableMCP:
             for obs in keyword_results:
                 text = f"{obs['title']}. {obs['summary']}"
                 dist = cosine_distance(query, text)
-                score = 0.7 * (1.0 - min(dist, 1.0)) + 0.3
+                score = 0.6 * _semantic_score(dist) + 0.4
                 scored.append((score, "obs", obs))
 
             # Semantic-only pass on recent observations
@@ -227,9 +262,9 @@ class MemorableMCP:
                     continue
                 text = f"{obs['title']}. {obs['summary']}"
                 dist = cosine_distance(query, text)
-                if dist < 0.6:
-                    score = 0.7 * (1.0 - min(dist, 1.0))
-                    scored.append((score, "obs", obs))
+                sem = _semantic_score(dist)
+                if sem > 0.15:
+                    scored.append((sem, "obs", obs))
 
         # ── User prompts: keyword + semantic ──
         if not obs_type or obs_type == "prompt":
@@ -237,7 +272,7 @@ class MemorableMCP:
 
             for p in keyword_prompts:
                 dist = cosine_distance(query, p["prompt_text"][:500])
-                score = 0.7 * (1.0 - min(dist, 1.0)) + 0.3
+                score = 0.6 * _semantic_score(dist) + 0.4
                 scored.append((score, "prompt", p))
 
         # Filter observations by type (but not prompts — they don't have types)
@@ -424,7 +459,7 @@ TOOLS = [
     },
     {
         "name": "memorable_search_sessions",
-        "description": "Search past sessions by keyword. Searches across compressed transcripts and titles. Use for questions like 'when did we discuss X' or 'what happened with Y'.",
+        "description": "Search past sessions using hybrid keyword + semantic search (Apple NLEmbedding). Finds sessions by exact keyword match AND conceptual similarity. Use for questions like 'when did we discuss X' or 'what happened with Y'.",
         "inputSchema": {
             "type": "object",
             "properties": {
