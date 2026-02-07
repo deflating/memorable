@@ -192,6 +192,10 @@ COMPOSE (Apple AFM or template):
 FORMAT as markdown with YAML frontmatter
 ```
 
+## IMPORTANT: Scope
+
+**Your ONLY reference for "what good looks like" are the three DeepSeek exemplars above.** Do NOT look at, consider, or base any decisions on the current session notes output by the existing Haiku pipeline. Those are known to be poor quality — generic paragraphs without structure. The exemplars above are the target. Build toward those.
+
 ## Research Tasks for the Team
 
 1. **Analyze the exemplars** — What specific information appears in each section? Can ALL of it be traced back to the raw transcript data?

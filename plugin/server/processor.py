@@ -240,6 +240,22 @@ class TranscriptProcessor:
         self.db.mark_processed(queue_item["id"], session_id=session_id)
         print(f"    Stored: {title} ({total_words}w)")
 
+        # Step 4: KG extraction from session summary
+        try:
+            from .kg import extract_from_session
+            kg_result = extract_from_session(
+                session_text=summary_text,
+                session_title=title,
+                session_header=header,
+                session_metadata=metadata_json,
+                db=self.db,
+            )
+            if kg_result["entities_added"] or kg_result["relationships_added"]:
+                print(f"    KG: +{kg_result['entities_added']} entities, "
+                      f"+{kg_result['relationships_added']} relationships")
+        except Exception as e:
+            print(f"    KG extraction error: {e}")
+
     # ── Apple Foundation Model (headers only) ───────────────
 
     def _generate_header(self, compressed_text: str, session_date: datetime) -> str:
