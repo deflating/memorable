@@ -16,6 +16,7 @@ from pathlib import Path
 
 from .db import MemorableDB
 from .config import Config
+from .llm import call_llm_json
 
 # ── Entity & Relationship Types ─────────────────────────────
 
@@ -356,6 +357,42 @@ def afm_extract(text: str) -> dict:
     return {"entities": entities, "relationships": relationships}
 
 
+def sonnet_filter_entities(candidates: list[dict]) -> list[dict]:
+    """Use Sonnet to filter entity candidates — keep real, discard garbage.
+
+    Takes a list of {"name": ..., "type": ...} candidates.
+    Returns only the ones Sonnet confirms as real named entities.
+    """
+    if not candidates:
+        return []
+
+    names_list = "\n".join(
+        f'- "{c["name"]}" ({c["type"]})'
+        for c in candidates
+    )
+
+    prompt = (
+        f"I'm building a knowledge graph from coding session observations. "
+        f"Below are entity candidates extracted by a small on-device model. "
+        f"Many are garbage — code fragments, SQL snippets, CLI commands, generic words, "
+        f"file paths, variable names, etc.\n\n"
+        f"Return ONLY the ones that are real, meaningful named entities worth remembering: "
+        f"real people, real projects/products, specific technologies/frameworks, "
+        f"real organizations, specific programming languages.\n\n"
+        f"Candidates:\n{names_list}\n\n"
+        f"Return JSON: {{\"keep\": [\"Name1\", \"Name2\", ...]}}\n"
+        f"If none are worth keeping, return {{\"keep\": []}}"
+    )
+
+    result = call_llm_json(prompt, system="You are a concise entity filter. Return only valid JSON.")
+    if not result or "keep" not in result:
+        print("  [kg] Sonnet filter failed, rejecting all candidates")
+        return []
+
+    keep_names = {n.lower() for n in result["keep"]}
+    return [c for c in candidates if c["name"].lower() in keep_names]
+
+
 def _closest_rel_type(pred: str) -> str:
     """Map free-form predicates to our defined relationship types."""
     pred_lower = pred.lower()
@@ -382,34 +419,24 @@ def _closest_rel_type(pred: str) -> str:
 
 # ── Main Extraction Pipeline ────────────────────────────────
 
-def extract_kg_from_observation(obs_text: str, db: MemorableDB,
-                                 session_id: str = "") -> dict:
-    """Run the full KG extraction pipeline on an observation.
+def extract_candidates_from_observation(obs_text: str, db: MemorableDB) -> dict:
+    """Extract entity/relationship candidates from a single observation.
 
-    1. Gazetteer lookup (instant — known entities)
-    2. NLTagger (instant — person names)
-    3. afm (slow — unknowns, relationships)
-    4. Store everything in the KG
+    Does NOT store anything — returns candidates for batch filtering.
 
-    Returns {"entities_added": int, "relationships_added": int}
+    Returns {"entities": [...], "relationships": [...], "known": [...]}
     """
-    entities_added = 0
-    rels_added = 0
-
-    # --- Tier 1: Gazetteer (known entities) ---
+    # --- Tier 1: Gazetteer (known entities — already trusted) ---
     known = gazetteer_lookup(obs_text)
     known_names = {e["name"].lower() for e in known}
 
-    # --- Tier 2: afm (authoritative entity types + relationships) ---
+    # --- Tier 2: afm (candidate entities + relationships) ---
     afm_result = afm_extract(obs_text)
 
+    new_candidates = []
     for entity in afm_result["entities"]:
         if entity["name"].lower() not in known_names:
-            db.add_entity(
-                entity["name"], entity["type"],
-                priority=4,  # auto-extracted
-            )
-            entities_added += 1
+            new_candidates.append(entity)
             known_names.add(entity["name"].lower())
 
     # --- Tier 3: NLTagger (catch person/org names afm missed) ---
@@ -420,29 +447,58 @@ def extract_kg_from_observation(obs_text: str, db: MemorableDB,
             continue
         if name.lower() in _NOISE_ENTITIES:
             continue
-        # Skip things that look like unix usernames or paths
         if name.lower().startswith("mattkennelly") or "/" in name:
             continue
         if name.lower() not in known_names:
-            db.add_entity(name, ent["type"], priority=5)
-            entities_added += 1
+            new_candidates.append(ent)
             known_names.add(name.lower())
 
-    for rel in afm_result["relationships"]:
-        # We need to figure out the types for source and target
-        source_type = _resolve_entity_type(rel["source"], afm_result["entities"], db)
-        target_type = _resolve_entity_type(rel["target"], afm_result["entities"], db)
+    return {
+        "entities": new_candidates,
+        "relationships": afm_result["relationships"],
+        "known": known,
+    }
+
+
+def store_approved_entities(
+    approved: list[dict],
+    relationships: list[dict],
+    all_entities: list[dict],
+    db: MemorableDB,
+) -> dict:
+    """Store Sonnet-approved entities and their relationships in the KG.
+
+    Returns {"entities_added": int, "relationships_added": int}
+    """
+    entities_added = 0
+    rels_added = 0
+
+    approved_names = {e["name"].lower() for e in approved}
+
+    for entity in approved:
+        db.add_entity(entity["name"], entity["type"], priority=4)
+        entities_added += 1
+
+    for rel in relationships:
+        source = rel.get("source", "").strip()
+        target = rel.get("target", "").strip()
+        pred = rel.get("predicate", "").strip()
+        # Only add relationships where at least one end is approved or already known
+        if not (source.lower() in approved_names or target.lower() in approved_names):
+            continue
+        source_type = _resolve_entity_type(source, all_entities, db)
+        target_type = _resolve_entity_type(target, all_entities, db)
         try:
             db.add_relationship(
-                source_name=rel["source"],
+                source_name=source,
                 source_type=source_type,
-                rel_type=rel["predicate"],
-                target_name=rel["target"],
+                rel_type=pred,
+                target_name=target,
                 target_type=target_type,
             )
             rels_added += 1
         except Exception:
-            pass  # skip duplicate or broken relationships
+            pass
 
     return {"entities_added": entities_added, "relationships_added": rels_added}
 
@@ -481,8 +537,11 @@ class KGProcessor:
     def process_observations(self, observations: list[dict]) -> dict:
         """Extract KG data from a batch of observations.
 
-        Only processes substantive observations (edits, writes, commands).
-        Uses tool input/output for richer extraction context.
+        Pipeline:
+        1. afm + NLTagger extract candidates from each observation (cheap, on-device)
+        2. Batch all new candidates together
+        3. One Sonnet call filters the batch (keeps real entities, discards garbage)
+        4. Store only approved entities and their relationships
         """
         if not observations:
             return {"entities_added": 0, "relationships_added": 0}
@@ -492,16 +551,15 @@ class KGProcessor:
             build_gazetteer(self.db)
             self._gazetteer_built = True
 
-        total_entities = 0
-        total_rels = 0
+        # Phase 1: Collect candidates from all observations
+        all_candidates = []
+        all_relationships = []
 
         for obs in observations:
-            # Only extract KG from substantive tool operations
             tool = obs.get("tool_name", "")
             if tool not in self._KG_WORTHY_TOOLS:
                 continue
 
-            # Build extraction text from tool data + observation summary
             parts = [obs.get("summary", "")]
             tool_input = obs.get("tool_input", "")
             if tool_input:
@@ -512,20 +570,37 @@ class KGProcessor:
                 continue
 
             try:
-                result = extract_kg_from_observation(
-                    text, self.db,
-                    session_id=obs.get("session_id", ""),
-                )
-                total_entities += result["entities_added"]
-                total_rels += result["relationships_added"]
+                result = extract_candidates_from_observation(text, self.db)
+                all_candidates.extend(result["entities"])
+                all_relationships.extend(result["relationships"])
             except Exception as e:
                 print(f"  KG extraction error: {e}")
 
+        if not all_candidates:
+            return {"entities_added": 0, "relationships_added": 0}
+
+        # Deduplicate candidates
+        seen = set()
+        unique_candidates = []
+        for c in all_candidates:
+            key = c["name"].lower()
+            if key not in seen:
+                seen.add(key)
+                unique_candidates.append(c)
+
+        print(f"  KG: {len(unique_candidates)} candidates from {len(observations)} observations")
+
+        # Phase 2: Sonnet filters the batch
+        approved = sonnet_filter_entities(unique_candidates)
+        print(f"  KG: Sonnet approved {len(approved)}/{len(unique_candidates)} entities")
+
+        # Phase 3: Store approved entities and relationships
+        result = store_approved_entities(
+            approved, all_relationships, unique_candidates, self.db,
+        )
+
         # Rebuild gazetteer after adding new entities
-        if total_entities > 0:
+        if result["entities_added"] > 0:
             build_gazetteer(self.db)
 
-        return {
-            "entities_added": total_entities,
-            "relationships_added": total_rels,
-        }
+        return result

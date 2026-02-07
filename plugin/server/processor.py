@@ -4,7 +4,8 @@ Reads .jsonl transcripts, filters with heuristics, compresses with
 LLMLingua-2 at 0.50 for searchable archive, then uses Apple's
 on-device Foundation Model to generate session notes and emoji headers.
 
-Fully local. No cloud APIs. No API keys.
+Session notes are the first target for replacement by an MLX
+fine-tuned model once training data is ready.
 """
 
 import json
@@ -144,8 +145,6 @@ class TranscriptProcessor:
         header = self._generate_header(compressed_50, session_date)
 
         # Step 3: Apple model generates session note from raw transcript
-        # Truncate raw to ~1800 words to fit in 4k token context window
-        # (prompt ~80 words + response ~200 words + content, at ~1.3 tokens/word)
         raw_truncated = self._truncate_for_apple(conversation_text, max_words=1800)
         summary = self._generate_summary(raw_truncated, session_date)
 
@@ -184,18 +183,16 @@ class TranscriptProcessor:
         print(f"    Stored: {title} ({total_words}w)")
 
     # ── Apple Foundation Model ────────────────────────────────
+    # TODO: Replace with MLX fine-tuned model when training data is ready
 
     def _generate_header(self, compressed_text: str, session_date: datetime) -> str:
         """Generate an emoji-tagged scannable header from compressed text."""
-        # Use first ~800 words of compressed text (fits 4k context easily)
         snippet = " ".join(compressed_text.split()[:800])
         prompt = (
-            f"Session on {session_date.strftime('%Y-%m-%d')}. "
-            f"Create 3-5 short tags for this conversation. "
-            f"Each tag: one emoji + brief phrase. Separate with ' | '. "
-            f"Output ONLY a single line of tags, nothing else. No tables, no markdown, no newlines. "
-            f"Cover: main topic, tone, outcome. "
-            f"Example output: 🔧 Built auth system | 💛 Felt overwhelmed | ✅ Chose JWT\n\n"
+            f"Create 3-5 tags for this coding session. "
+            f"Each tag: one emoji then 2-4 words. Separate with ' | '. "
+            f"ONE line only. No markdown. No tables.\n"
+            f"Example: 🔧 Built auth system | 💛 Felt overwhelmed | ✅ Chose JWT\n\n"
             f"{snippet}"
         )
         raw = _call_apple_model(prompt)
@@ -206,14 +203,11 @@ class TranscriptProcessor:
         return header
 
     def _generate_summary(self, conversation_text: str, session_date: datetime) -> str:
-        """Generate a casual session note from the raw transcript."""
+        """Generate a session note from the raw transcript."""
         prompt = (
-            f"Session between Matt and Claude on {session_date.strftime('%Y-%m-%d')}. "
-            f"Write a quick third-person note about what happened — like a logbook entry. "
-            f"Use 'Matt' and 'Claude', not 'you' or 'I'. "
-            f"No corporate speak, no bullet points, no greeting. "
-            f"Just: what they talked about, what mattered, what's unfinished. "
-            f"Start directly with the content. 150 words max.\n\n"
+            f"Write a 100-word note about this coding session between Matt and Claude. "
+            f"Third person. Specific details: file names, technologies, decisions made. "
+            f"Start with the main thing they worked on. No date prefix. No bullet points.\n\n"
             f"{conversation_text}"
         )
         return _call_apple_model(prompt)
