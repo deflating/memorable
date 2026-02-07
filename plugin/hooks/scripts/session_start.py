@@ -25,20 +25,10 @@ from server.config import Config
 def _format_session(s: dict) -> str:
     """Format a session for the seed — compact but informative."""
     header = s.get("header", "")
-    summary = s.get("summary", "")
-    words = s.get("word_count", 0)
-    word_str = f"{words // 1000}k" if words >= 1000 else str(words)
 
     line = f"  {s['date']} | {s['title'][:55]}"
     if header:
         line += f"\n    {header[:100]}"
-    if summary:
-        # Take first 2 sentences of summary
-        sentences = summary.replace("\n", " ").split(". ")
-        preview = ". ".join(sentences[:2]).strip()
-        if not preview.endswith("."):
-            preview += "."
-        line += f"\n    {preview[:200]}"
     return line
 
 

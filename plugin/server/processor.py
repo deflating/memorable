@@ -1,11 +1,16 @@
 """Transcript processing pipeline for Memorable.
 
 Reads .jsonl transcripts, filters with heuristics, compresses with
-LLMLingua-2 at 0.50 for searchable archive, then uses Apple's
-on-device Foundation Model to generate session notes and emoji headers.
+LLMLingua-2 at 0.50 for searchable archive, then extracts structured
+metadata using lightweight NLP tools:
 
-Session notes are the first target for replacement by an MLX
-fine-tuned model once training data is ready.
+- YAKE: unsupervised keyword extraction (~10MB, no models)
+- GLiNER: zero-shot named entity recognition (~200MB on disk)
+- Apple NLTagger: on-device sentiment scoring (0MB, macOS built-in)
+- Apple Foundation Model: emoji tag headers only
+
+No LLM-generated summaries. The compressed transcript is the primary
+memory; metadata provides the searchable index.
 """
 
 import json
@@ -23,6 +28,10 @@ from .config import Config
 # Lazy-loaded compressor (LLMLingua model is ~500MB, only load once)
 _compressor = None
 
+# Lazy-loaded extractors
+_yake_extractor = None
+_gliner_model = None
+
 
 def _get_compressor():
     global _compressor
@@ -34,6 +43,24 @@ def _get_compressor():
             device_map="cpu",
         )
     return _compressor
+
+
+def _get_yake():
+    global _yake_extractor
+    if _yake_extractor is None:
+        import yake
+        _yake_extractor = yake.KeywordExtractor(
+            lan="en", n=3, top=15, dedupLim=0.7
+        )
+    return _yake_extractor
+
+
+def _get_gliner():
+    global _gliner_model
+    if _gliner_model is None:
+        from gliner import GLiNER
+        _gliner_model = GLiNER.from_pretrained("urchade/gliner_small-v2.1")
+    return _gliner_model
 
 
 def _call_apple_model(prompt: str, instructions: str = "") -> str:
@@ -144,16 +171,13 @@ class TranscriptProcessor:
         # Step 2: Apple model generates emoji header from compressed text
         header = self._generate_header(compressed_50, session_date)
 
-        # Step 3: Apple model generates session note from raw transcript
-        raw_truncated = self._truncate_for_apple(conversation_text, max_words=1800)
-        summary = self._generate_summary(raw_truncated, session_date)
+        # Step 3: Extract structured metadata (YAKE + GLiNER + sentiment)
+        metadata = self._extract_metadata(conversation_text)
+        metadata_json = json.dumps(metadata)
 
-        # If raw was still too long, retry with compressed text instead
-        if summary.startswith("[Apple model"):
-            summary = self._generate_summary(
-                self._truncate_for_apple(compressed_50, max_words=1800),
-                session_date,
-            )
+        # Build summary from keywords (flat, searchable)
+        kw_list = [kw for kw, _ in metadata.get("keywords", [])]
+        summary = ", ".join(kw_list) if kw_list else ""
 
         # Extract title from human messages, fall back to header's first tag
         title = self._extract_title(messages)
@@ -173,6 +197,7 @@ class TranscriptProcessor:
             summary=summary,
             header=header,
             compressed_50=compressed_50,
+            metadata=metadata_json,
             source_path=str(path),
             message_count=len(messages),
             word_count=total_words,
@@ -182,14 +207,13 @@ class TranscriptProcessor:
         self.db.mark_processed(queue_item["id"], session_id=session_id)
         print(f"    Stored: {title} ({total_words}w)")
 
-    # ── Apple Foundation Model ────────────────────────────────
-    # TODO: Replace with MLX fine-tuned model when training data is ready
+    # ── Apple Foundation Model (headers only) ───────────────
 
     def _generate_header(self, compressed_text: str, session_date: datetime) -> str:
         """Generate an emoji-tagged scannable header from compressed text."""
         snippet = " ".join(compressed_text.split()[:800])
         prompt = (
-            f"Create 3-5 tags for this coding session. "
+            f"Create 3-5 tags for this conversation. "
             f"Each tag: one emoji then 2-4 words. Separate with ' | '. "
             f"ONE line only. No markdown. No tables.\n"
             f"Example: 🔧 Built auth system | 💛 Felt overwhelmed | ✅ Chose JWT\n\n"
@@ -202,27 +226,87 @@ class TranscriptProcessor:
         header = re.sub(r'\s*\|\s*$', '', header)  # trailing pipe
         return header
 
-    def _generate_summary(self, conversation_text: str, session_date: datetime) -> str:
-        """Generate a session note from the raw transcript."""
-        prompt = (
-            f"Write a 100-word note about this coding session between Matt and Claude. "
-            f"Third person. Specific details: file names, technologies, decisions made. "
-            f"Start with the main thing they worked on. No date prefix. No bullet points.\n\n"
-            f"{conversation_text}"
-        )
-        return _call_apple_model(prompt)
+    # ── Metadata Extraction (YAKE + GLiNER + sentiment) ────
 
-    def _truncate_for_apple(self, text: str, max_words: int = 1800) -> str:
-        """Truncate text to fit Apple model's 4k token context window."""
-        words = text.split()
-        if len(words) <= max_words:
-            return text
-        # Take first third and last two-thirds to capture start and recent context
-        head_words = max_words // 3
-        tail_words = max_words - head_words
-        head = " ".join(words[:head_words])
-        tail = " ".join(words[-tail_words:])
-        return head + "\n\n[...middle of conversation truncated...]\n\n" + tail
+    def _extract_metadata(self, conversation_text: str) -> dict:
+        """Extract structured metadata from conversation using lightweight NLP."""
+        metadata = {}
+
+        # YAKE keywords
+        try:
+            kw_extractor = _get_yake()
+            keywords = kw_extractor.extract_keywords(conversation_text)
+            # Filter out generic words
+            skip = {"option", "options", "claude", "user", "yeah", "okay"}
+            metadata["keywords"] = [
+                (kw, round(score, 4))
+                for kw, score in keywords
+                if kw.lower() not in skip
+            ]
+        except Exception as e:
+            metadata["keywords"] = []
+            metadata["keywords_error"] = str(e)
+
+        # GLiNER entity extraction
+        try:
+            model = _get_gliner()
+            labels = ["person", "technology", "software tool", "hardware",
+                       "operating system", "command"]
+            words = conversation_text.split()
+            chunk_size = 384
+            entity_counts: dict[tuple[str, str], int] = {}
+            skip_ents = {"user", "claude", "option", "options"}
+
+            for i in range(0, len(words), chunk_size):
+                chunk = " ".join(words[i:i + chunk_size])
+                try:
+                    results = model.predict_entities(chunk, labels, threshold=0.3)
+                    for ent in results:
+                        text = ent["text"].strip()
+                        if text.lower() in skip_ents or len(text) < 2:
+                            continue
+                        key = (text, ent["label"])
+                        entity_counts[key] = entity_counts.get(key, 0) + 1
+                except Exception:
+                    continue
+
+            # Group by label, sorted by frequency
+            entities_by_type: dict[str, list] = {}
+            for (text, label), count in sorted(entity_counts.items(), key=lambda x: -x[1]):
+                entities_by_type.setdefault(label, []).append(
+                    {"name": text, "count": count}
+                )
+            metadata["entities"] = entities_by_type
+        except Exception as e:
+            metadata["entities"] = {}
+            metadata["entities_error"] = str(e)
+
+        # Apple NLTagger sentiment (via Swift CLI)
+        try:
+            metadata["sentiment"] = self._extract_sentiment(conversation_text)
+        except Exception as e:
+            metadata["sentiment"] = {"average": 0.0, "label": "unknown"}
+            metadata["sentiment_error"] = str(e)
+
+        return metadata
+
+    def _extract_sentiment(self, text: str) -> dict:
+        """Run Apple NLTagger sentiment scoring via the compiled Swift extractor."""
+        extractor_path = Path(__file__).parent / "nlp_extract"
+        if not extractor_path.exists():
+            return {"average": 0.0, "label": "unavailable"}
+
+        try:
+            result = subprocess.run(
+                [str(extractor_path)],
+                input=text, capture_output=True, text=True, timeout=30
+            )
+            if result.returncode == 0:
+                data = json.loads(result.stdout)
+                return data.get("sentiment", {"average": 0.0, "label": "unknown"})
+        except Exception:
+            pass
+        return {"average": 0.0, "label": "unknown"}
 
     # ── Transcript Extraction ─────────────────────────────────
 
@@ -280,7 +364,7 @@ class TranscriptProcessor:
     def _format_conversation(self, messages: list[dict]) -> str:
         lines = []
         for msg in messages:
-            role = "Matt" if msg["role"] == "user" else "Claude"
+            role = "User" if msg["role"] == "user" else "Claude"
             lines.append(f"**{role}:** {msg['text'][:500]}")
         return "\n\n".join(lines)
 

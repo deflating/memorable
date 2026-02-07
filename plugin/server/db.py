@@ -111,15 +111,16 @@ class MemorableDB:
     def store_session(self, transcript_id: str, date: str, title: str,
                       summary: str, header: str, compressed_50: str,
                       source_path: str = "", message_count: int = 0,
-                      word_count: int = 0, human_word_count: int = 0) -> int:
+                      word_count: int = 0, human_word_count: int = 0,
+                      metadata: str = "{}") -> int:
         def do(conn):
             cur = conn.execute(
                 """INSERT INTO sessions
                    (transcript_id, date, title, summary, header, compressed_50,
-                    source_path, message_count, word_count, human_word_count)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    metadata, source_path, message_count, word_count, human_word_count)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (transcript_id, date, title, summary, header, compressed_50,
-                 source_path, message_count, word_count, human_word_count)
+                 metadata, source_path, message_count, word_count, human_word_count)
             )
             return cur.lastrowid
         return self._execute(do)
@@ -589,6 +590,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     summary TEXT NOT NULL DEFAULT '',
     header TEXT NOT NULL DEFAULT '',
     compressed_50 TEXT NOT NULL DEFAULT '',
+    metadata TEXT NOT NULL DEFAULT '{}',
     source_path TEXT DEFAULT '',
     message_count INTEGER DEFAULT 0,
     word_count INTEGER DEFAULT 0,

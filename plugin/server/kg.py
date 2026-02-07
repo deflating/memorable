@@ -50,51 +50,72 @@ _NOISE_ENTITIES = {
     "table", "column", "row", "query", "value", "key", "text",
     "watcher", "pipeline", "daemon", "handler", "processor",
     "framework", "library", "package", "dependency", "import",
+    "schema", "backup", "status", "project", "description",
+    "plugin", "session", "sessions", "concept", "technology",
     # Generic action words
     "change", "update", "delete", "read", "write", "edit",
     "search", "create", "build", "start", "stop", "check",
     "restarted", "cleared", "printed", "checked", "verified",
-    "edited code", "specified text",
-    # Memorable internal terms (not useful as entities)
+    "edited code", "specified text", "pushed changes",
+    # Memorable internal terms
     "entities", "relationships", "observations", "prompts",
     "knowledge graph", "knowledge graphs", "watcher log",
     "kg extraction", "entity validation logic", "kg code",
     "kg growth statistics", "kg processing issues",
-    "observation processing pipeline",
-    # Entity type names (afm sometimes outputs these as entities)
+    "observation processing pipeline", "sonnet_filter_entities",
+    "memorabledb",
+    # Entity type names (afm outputs these as entities)
     "person", "project", "technology", "organization",
     "file", "concept", "tool", "service", "language",
-    # Table/column names that leak through
+    # Table/column names
     "kg_entities", "kg_relationships", "sessions",
     "observations_queue", "user_prompts", "processing_queue",
-    # Short file basenames (prefer full relative paths)
+    # File names — individual filenames are not KG-worthy
     "kg.py", "db.py", "web.py", "config.py", "observer.py",
-    "watcher.py", "mcp_server.py", "__main__.py",
+    "watcher.py", "mcp_server.py", "__main__.py", "llm.py",
+    "hooks.json", "plugin.json", "readme.md", "architecture.md",
+    "claude.md", "session_start.py",
+    # File extensions treated as entities
+    "html", "css", "json", "yaml", "xml", "sql", "toml", "txt",
+    "jsonl",
     # Common words that slip through
     "noise", "filter", "filtering", "extraction",
     "summary", "context", "hook", "hooks",
     "fresh start", "clean", "cleanup",
-    # More generic terms and fragments
-    "html", "css", "json", "yaml", "xml", "sql", "api", "ui",
-    "path", "config", "diff", "stat", "diff --stat",
-    "user", "command", "plugin", "session", "sessions",
-    "viewer", "canvas", "graph", "node", "edge", "tab", "nodes", "edges",
-    "endpoint", "route", "handler", "model", "view",
-    "commit", "branch", "push", "pull", "merge",
-    # CLI tools and common shell commands (not interesting as entities)
+    "diff", "stat", "diff --stat", "git diff", "git diff --stat",
+    "user", "command", "viewer", "canvas", "graph", "node",
+    "edge", "tab", "nodes", "edges", "endpoint", "route",
+    "model", "view", "commit", "branch", "push", "pull", "merge",
+    "remote repository", "git repository",
+    "directory layout", "database schema", "pipeline details",
+    "mcp tools", "apple model",
+    # CLI tools and shell commands
     "curl", "head", "tail", "sleep", "lsof", "kill", "bash", "sh",
     "python3", "python", "pip", "npm", "node", "git", "grep", "find",
     "cat", "ls", "rm", "cp", "mv", "mkdir", "touch", "echo", "sed",
     "awk", "sort", "xargs", "sqlite3", "jq", "json.tool",
+    "wc", "cd", "bun", "ls -la", "ls -l",
+    # SQL fragments that leak through
+    "select count", "desc limit", "desc", "limit", "select",
+    "insert", "order by",
     # Network/infra fragments
     "127.0.0.1", "localhost", "port", "7777", "8080", "8081", "3000",
     "web server", "old web server", "web server process",
+    "pid",
     # Python stdlib / builtins
     "sys", "os", "pathlib", "subprocess", "argparse",
     "dict", "set", "tuple", "int", "str", "float", "bool", "none",
-    # Generic code fragments that leak
+    "llm",
+    # Generic code fragments
     "expanded", "db_path", "conn", "row", "rows", "args",
     "param", "params", "return", "self", "init", "main",
+    "claude_path", "enabledplugins", "toolinput", "tool input",
+    "thefile", "mattkennelly",
+    # Possessives and fragments
+    "claude's", "matt's",
+    # Generic terms that are not specific named entities
+    "scripts", "marketplaces", "plugins",
+    "memorable-related session files",
 }
 
 # ── NLGazetteer — Known Entity Lookup ───────────────────────
@@ -317,15 +338,16 @@ def afm_extract(text: str) -> dict:
     entities = []
     for e in result.get("entities", []):
         name = e.get("name", "").strip()
+        name_lower = name.lower()
         etype = e.get("type", "concept").strip().lower()
         if not name or len(name) < 3 or etype not in ENTITY_TYPES:
             continue
-        if name.lower() in _NOISE_ENTITIES or name.lower() in _NOISE_WORDS:
+        if name_lower in _NOISE_ENTITIES or name_lower in _NOISE_WORDS:
             continue
         # Skip absolute paths, home dirs, and usernames
         if name.startswith("/") or name.startswith("~") or name.startswith("-"):
             continue
-        if name.lower().startswith("mattkennelly"):
+        if name_lower.startswith("mattkennelly"):
             continue
         # Skip phrases with too many words (likely descriptions, not entities)
         if len(name.split()) > 4:
@@ -336,8 +358,18 @@ def afm_extract(text: str) -> dict:
         # Skip purely numeric or IP-like strings
         if re.match(r'^[\d.:]+$', name):
             continue
-        # Skip server.xxx module references
-        if re.match(r'^server\.\w+$', name):
+        # Skip dotted module references (server.db, server.config, etc.)
+        if "." in name and not " " in name:
+            continue
+        # Skip underscored identifiers (_format_session, claude_path, etc.)
+        if "_" in name:
+            continue
+        # Skip names ending with common file extensions
+        if re.match(r'.*\.(py|js|ts|json|md|txt|html|css|toml|yaml|yml|cjs|jsonl)$', name_lower):
+            continue
+        # Skip single common words (real entities are usually multi-word or proper nouns)
+        if len(name.split()) == 1 and name_lower == name:
+            # Single lowercase word — almost never a real entity
             continue
         entities.append({"name": name, "type": etype})
 
@@ -372,19 +404,32 @@ def sonnet_filter_entities(candidates: list[dict]) -> list[dict]:
     )
 
     prompt = (
-        f"I'm building a knowledge graph from coding session observations. "
-        f"Below are entity candidates extracted by a small on-device model. "
-        f"Many are garbage — code fragments, SQL snippets, CLI commands, generic words, "
-        f"file paths, variable names, etc.\n\n"
-        f"Return ONLY the ones that are real, meaningful named entities worth remembering: "
-        f"real people, real projects/products, specific technologies/frameworks, "
-        f"real organizations, specific programming languages.\n\n"
+        f"I'm building a personal knowledge graph from coding sessions. "
+        f"A small on-device model extracted these entity candidates. "
+        f"Most are GARBAGE. Be extremely selective — when in doubt, reject.\n\n"
+        f"KEEP only:\n"
+        f"- Real people's full names (not pronouns, not 'Claude's')\n"
+        f"- Real named products/projects (not generic words like 'plugin', 'server')\n"
+        f"- Specific named technologies/frameworks with real brand names (e.g. 'React', 'FastAPI')\n"
+        f"- Real organizations/companies\n\n"
+        f"REJECT (examples of garbage we've seen):\n"
+        f"- SQL fragments: 'DESC LIMIT', 'SELECT COUNT'\n"
+        f"- Shell commands: 'cd', 'wc', 'cat', 'ls', 'grep', 'echo'\n"
+        f"- Generic words: 'database', 'technology', 'concept', 'plugin', 'server'\n"
+        f"- Code identifiers: '_format_session', 'MemorableDB', 'claude_path'\n"
+        f"- File names/paths: 'README.md', 'hooks.json', 'llm.py'\n"
+        f"- Module references: 'server.db', 'server.config'\n"
+        f"- Possessives/fragments: 'Claude's', 'Matt's'\n"
+        f"- Single common words: 'status', 'backup', 'schema'\n\n"
         f"Candidates:\n{names_list}\n\n"
         f"Return JSON: {{\"keep\": [\"Name1\", \"Name2\", ...]}}\n"
         f"If none are worth keeping, return {{\"keep\": []}}"
     )
 
-    result = call_llm_json(prompt, system="You are a concise entity filter. Return only valid JSON.")
+    result = call_llm_json(
+        prompt,
+        system="You are a ruthless entity filter. Most candidates are garbage. Reject aggressively. Return only valid JSON.",
+    )
     if not result or "keep" not in result:
         print("  [kg] Sonnet filter failed, rejecting all candidates")
         return []
@@ -443,15 +488,23 @@ def extract_candidates_from_observation(obs_text: str, db: MemorableDB) -> dict:
     tagger_entities = extract_named_entities(obs_text)
     for ent in tagger_entities:
         name = ent["name"]
-        if len(name) < 3 or name.lower() in _NOISE_WORDS:
+        name_lower = name.lower()
+        if len(name) < 3 or name_lower in _NOISE_WORDS:
             continue
-        if name.lower() in _NOISE_ENTITIES:
+        if name_lower in _NOISE_ENTITIES:
             continue
-        if name.lower().startswith("mattkennelly") or "/" in name:
+        if name_lower.startswith("mattkennelly") or "/" in name:
             continue
-        if name.lower() not in known_names:
+        # Same structural filters as afm_extract
+        if "." in name and " " not in name:
+            continue
+        if "_" in name:
+            continue
+        if len(name.split()) == 1 and name_lower == name:
+            continue
+        if name_lower not in known_names:
             new_candidates.append(ent)
-            known_names.add(name.lower())
+            known_names.add(name_lower)
 
     return {
         "entities": new_candidates,
