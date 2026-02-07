@@ -457,6 +457,27 @@ class MemorableDB:
             return _rows_to_dicts(cur)
         return self._query(do)
 
+    def get_timeline(self, limit: int = 100) -> list[dict]:
+        def do(conn):
+            cur = conn.execute(
+                """SELECT 'observation' as kind, id, session_id,
+                          observation_type, title, summary, files,
+                          tool_name, NULL as prompt_number,
+                          NULL as prompt_text, created_at
+                   FROM observations
+                   UNION ALL
+                   SELECT 'prompt' as kind, id, session_id,
+                          NULL, NULL, NULL, NULL,
+                          NULL, prompt_number,
+                          prompt_text, created_at
+                   FROM user_prompts
+                   ORDER BY created_at DESC
+                   LIMIT ?""",
+                (limit,)
+            )
+            return _rows_to_dicts(cur)
+        return self._query(do)
+
     # ── User Prompts ─────────────────────────────────────────
 
     def store_user_prompt(self, session_id: str, prompt_number: int,

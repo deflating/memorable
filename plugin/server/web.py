@@ -35,6 +35,7 @@ class MemorableHandler(BaseHTTPRequestHandler):
             "/api/stats": self._api_stats,
             "/api/sessions": self._api_sessions,
             "/api/session": self._api_session_detail,
+            "/api/timeline": self._api_timeline,
             "/api/observations": self._api_observations,
             "/api/prompts": self._api_prompts,
             "/api/search": self._api_search,
@@ -86,6 +87,11 @@ class MemorableHandler(BaseHTTPRequestHandler):
             "observations": obs,
             "prompts": prompts,
         })
+
+    def _api_timeline(self, params):
+        limit = int(params.get("limit", [100])[0])
+        items = db.get_timeline(limit=limit)
+        self._json_response(items)
 
     def _api_observations(self, params):
         limit = int(params.get("limit", [50])[0])

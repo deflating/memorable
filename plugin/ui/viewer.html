@@ -261,8 +261,7 @@
 </header>
 
 <div class="tabs">
-  <div class="tab active" data-tab="observations">Observations</div>
-  <div class="tab" data-tab="prompts">Prompts</div>
+  <div class="tab active" data-tab="timeline">Timeline</div>
   <div class="tab" data-tab="sessions">Sessions</div>
 </div>
 
@@ -272,7 +271,7 @@
 
 <script>
 const API = '';  // same origin
-let currentTab = 'observations';
+let currentTab = 'timeline';
 let searchTimeout = null;
 
 // ── Fetch helpers ──
@@ -328,6 +327,13 @@ function renderPrompt(p) {
   </div>`;
 }
 
+function renderTimelineItem(item) {
+  if (item.kind === 'prompt') {
+    return renderPrompt(item);
+  }
+  return renderObservation(item);
+}
+
 function renderSession(s) {
   const tid = s.transcript_id || '';
   return `<div class="card session-card" onclick="loadSessionDetail('${esc(tid)}')">
@@ -365,19 +371,17 @@ async function loadSessionDetail(tid) {
       <div class="detail-summary">${esc(s.summary || s.header || '')}</div>
     </div>`;
 
-    if (obs.length) {
-      html += `<div class="detail-section"><h3>Observations (${obs.length})</h3>`;
-      html += obs.map(renderObservation).join('');
-      html += `</div>`;
-    }
+    // Merge observations and prompts into a timeline
+    const timeline = [
+      ...obs.map(o => ({ ...o, kind: 'observation' })),
+      ...prompts.map(p => ({ ...p, kind: 'prompt' })),
+    ].sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
 
-    if (prompts.length) {
-      html += `<div class="detail-section"><h3>Prompts (${prompts.length})</h3>`;
-      html += prompts.map(renderPrompt).join('');
+    if (timeline.length) {
+      html += `<div class="detail-section"><h3>Timeline (${timeline.length})</h3>`;
+      html += timeline.map(renderTimelineItem).join('');
       html += `</div>`;
-    }
-
-    if (!obs.length && !prompts.length) {
+    } else {
       html += `<div class="empty">No observations or prompts recorded for this session.</div>`;
     }
 
@@ -431,20 +435,13 @@ async function loadTab(tab, query) {
       return;
     }
 
-    if (tab === 'observations') {
-      const data = await api('/api/observations?limit=100');
+    if (tab === 'timeline') {
+      const data = await api('/api/timeline?limit=200');
       if (!data.length) {
-        content.innerHTML = '<div class="empty">No observations yet. They\'ll appear as you use Claude Code.</div>';
+        content.innerHTML = '<div class="empty">No activity yet. Observations and prompts will appear as you use Claude Code.</div>';
         return;
       }
-      content.innerHTML = data.map(renderObservation).join('');
-    } else if (tab === 'prompts') {
-      const data = await api('/api/prompts?limit=100');
-      if (!data.length) {
-        content.innerHTML = '<div class="empty">No prompts captured yet.</div>';
-        return;
-      }
-      content.innerHTML = data.map(renderPrompt).join('');
+      content.innerHTML = data.map(renderTimelineItem).join('');
     } else if (tab === 'sessions') {
       const data = await api('/api/sessions?limit=50');
       if (!data.length) {
@@ -479,7 +476,7 @@ document.getElementById('search').addEventListener('input', (e) => {
 
 // ── Init ──
 loadStats();
-loadTab('observations');
+loadTab('timeline');
 </script>
 </body>
 </html>
