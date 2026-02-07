@@ -1,8 +1,8 @@
 """MCP server for Memorable.
 
 Exposes tools to Claude Code for memory management:
-- get_startup_seed: lean context for session startup
-- search_sessions: keyword search over session notes
+- get_startup_seed: recency-gradient context for session startup
+- search_sessions: keyword search over compressed transcripts
 - record_significant: flag important moments mid-conversation
 - query_kg: structured knowledge graph queries
 - get_system_status: processing queue, KG stats, health
@@ -66,7 +66,7 @@ class MemorableMCP:
             "capabilities": {"tools": {}},
             "serverInfo": {
                 "name": "memorable",
-                "version": "0.1.0",
+                "version": "0.2.0",
             }
         }
 
@@ -104,7 +104,12 @@ class MemorableMCP:
     # ── Tool Implementations ──────────────────────────────────
 
     def _tool_get_startup_seed(self, args: dict) -> str:
-        """Build a lean startup context from KG + recent sessions + last seed."""
+        """Build startup context using recency gradient:
+        - Sacred facts (always)
+        - record_significant entries (always)
+        - Last 2-3 sessions at 0.50 compression (recent texture)
+        - Sessions 4-20 at 0.20 compression (topic skeletons)
+        """
         parts = []
 
         # Sacred facts (priority 10) — always included
@@ -114,19 +119,41 @@ class MemorableMCP:
             for fact in sacred:
                 parts.append(f"- **{fact['name']}** ({fact['type']}): {fact['description']}")
 
-        # Recent high-continuity sessions
-        recent = self.db.get_recent_sessions(days=5, limit=10)
-        if recent:
-            parts.append("\n## Recent Sessions (last 5 days)")
-            for s in recent:
-                tags = json.loads(s["tags"]) if s["tags"] else []
-                tag_str = " ".join(tags[:5]) if tags else ""
-                parts.append(f"- [{s['date']}] **{s['title']}** (continuity: {s['continuity']}) {tag_str}")
+        # Recent record_significant entries (high-priority KG entities)
+        significant = self.db.query_kg(min_priority=7, limit=20)
+        if significant:
+            # Filter to non-sacred entries (sacred already shown above)
+            sig_entries = [e for e in significant if e.get("priority", 0) < 10]
+            if sig_entries:
+                parts.append("\n## Important (recorded)")
+                for e in sig_entries:
+                    parts.append(f"- **{e['name']}** (p:{e['priority']}): {e.get('description', '')}")
 
-        # Last context seed (session continuation)
-        last_seed = self.db.get_last_context_seed()
-        if last_seed:
-            parts.append(f"\n## Last Session Context\n{last_seed['seed_content']}")
+        # Recency gradient: last N sessions at 0.50, older ones at 0.20
+        recent_count = self.config.get("seed_recent_compressed", 3)
+        skeleton_count = self.config.get("seed_skeleton_count", 20)
+
+        recent_full = self.db.get_recent_compressed(limit=recent_count)
+        if recent_full:
+            parts.append(f"\n## Recent Sessions (compressed)")
+            for s in recent_full:
+                parts.append(f"\n### {s['title']} ({s['date']}, {s['word_count']}w original)")
+                # Truncate to keep seed reasonable
+                text = s["compressed_50"]
+                if len(text) > 2000:
+                    text = text[:2000] + "\n[...truncated]"
+                parts.append(text)
+
+        # Older skeletons at 0.20
+        older_skeletons = self.db.get_recent_skeletons(limit=skeleton_count)
+        if older_skeletons:
+            # Skip the ones we already showed at 0.50
+            recent_ids = {s["id"] for s in recent_full} if recent_full else set()
+            skeletons = [s for s in older_skeletons if s["id"] not in recent_ids]
+            if skeletons:
+                parts.append(f"\n## Older Sessions (skeletons)")
+                for s in skeletons:
+                    parts.append(f"- [{s['date']}] **{s['title']}** ({s['word_count']}w): {s['skeleton_20'][:200]}")
 
         if not parts:
             return "No memory data yet. This is a fresh Memorable installation."
@@ -146,10 +173,10 @@ class MemorableMCP:
         lines = [f"Found {len(results)} session(s) matching '{query}':\n"]
         for s in results:
             lines.append(f"### {s['title']} ({s['date']})")
-            lines.append(f"Continuity: {s['continuity']}/10 | Tags: {s['tags']}")
-            # Show first 500 chars of note
-            preview = s["note_content"][:500]
-            if len(s["note_content"]) > 500:
+            lines.append(f"Messages: {s['message_count']} | Words: {s['word_count']}")
+            # Show first 800 chars of compressed transcript
+            preview = s["compressed_50"][:800]
+            if len(s["compressed_50"]) > 800:
                 preview += "..."
             lines.append(preview)
             lines.append("")
@@ -211,16 +238,18 @@ class MemorableMCP:
         lines = [
             "## Memorable System Status\n",
             f"- Sessions stored: {stats['sessions']}",
+            f"- Total words processed: {stats['total_words_processed']:,}",
             f"- KG entities: {stats['kg_entities']}",
             f"- KG relationships: {stats['kg_relationships']}",
             f"- Sacred facts (p10): {stats['sacred_facts']}",
             f"- Context seeds: {stats['context_seeds']}",
             f"- Pending transcripts: {stats['pending_transcripts']}",
             f"\n### Config",
-            f"- Processing model: {config_info.get('processing_model')}",
-            f"- Memory dir: {config_info.get('memory_dir')}",
+            f"- Processing: LLMLingua-2 (local, CPU)",
+            f"- Storage compression: {config_info.get('compression_rate_storage')}",
+            f"- Skeleton compression: {config_info.get('compression_rate_skeleton')}",
+            f"- Seed: {config_info.get('seed_recent_compressed')} recent @ 0.50 + {config_info.get('seed_skeleton_count')} skeletons @ 0.20",
             f"- Watcher enabled: {config_info.get('watcher_enabled')}",
-            f"- Summary window: {config_info.get('summary_days')} days",
         ]
 
         return "\n".join(lines)
@@ -252,7 +281,7 @@ class MemorableMCP:
 TOOLS = [
     {
         "name": "memorable_get_startup_seed",
-        "description": "Get a lean startup context packet for the current session. Includes sacred facts, recent session summaries, and the last session's context seed. Call this at the start of every session.",
+        "description": "Get startup context for the current session. Uses a recency gradient: sacred facts, flagged important moments, last 2-3 sessions at moderate compression, and older session skeletons. Call this at the start of every session.",
         "inputSchema": {
             "type": "object",
             "properties": {},
@@ -260,13 +289,13 @@ TOOLS = [
     },
     {
         "name": "memorable_search_sessions",
-        "description": "Search past session notes by keyword. Use for questions like 'when did we discuss X' or 'what happened with Y'.",
+        "description": "Search past sessions by keyword. Searches across compressed transcripts and titles. Use for questions like 'when did we discuss X' or 'what happened with Y'.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Search term to find in session notes, titles, and tags",
+                    "description": "Search term to find in session transcripts and titles",
                 },
                 "limit": {
                     "type": "integer",

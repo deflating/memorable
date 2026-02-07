@@ -3,6 +3,8 @@
 
 Loads the startup seed and injects it as context for Claude.
 Output to stdout becomes part of Claude's context.
+
+Uses recency gradient: sacred facts + recent compressed + older skeletons.
 """
 
 import json
@@ -34,29 +36,32 @@ def main():
         facts = "; ".join(f"{f['name']}: {f['description']}" for f in sacred)
         parts.append(f"[Memorable] Sacred facts: {facts}")
 
-    # Last context seed — session continuation
-    last_seed = db.get_last_context_seed()
-    if last_seed:
-        parts.append(f"[Memorable] Last session: {last_seed['seed_content']}")
-
-    # Recent high-continuity sessions as pointers
-    recent = db.get_recent_sessions(days=3, limit=5)
+    # Recent sessions at 0.50 (texture)
+    recent_count = config.get("seed_recent_compressed", 3)
+    recent = db.get_recent_compressed(limit=recent_count)
     if recent:
-        session_list = ", ".join(
-            f"{s['title']} ({s['date']}, c:{s['continuity']})"
-            for s in recent if s['continuity'] >= 6
-        )
-        if session_list:
-            parts.append(f"[Memorable] Recent important sessions: {session_list}")
+        titles = ", ".join(f"{s['title']} ({s['date']})" for s in recent)
+        parts.append(f"[Memorable] Recent sessions: {titles}")
+
+    # Older skeletons at 0.20
+    skeleton_count = config.get("seed_skeleton_count", 20)
+    skeletons = db.get_recent_skeletons(limit=skeleton_count)
+    if skeletons:
+        recent_ids = {s["id"] for s in recent} if recent else set()
+        older = [s for s in skeletons if s["id"] not in recent_ids]
+        if older:
+            skeleton_list = ", ".join(f"{s['title']} ({s['date']})" for s in older[:10])
+            parts.append(f"[Memorable] Older sessions: {skeleton_list}")
 
     # Stats for awareness
     stats = db.get_stats()
     if stats["sessions"] > 0:
         parts.append(
             f"[Memorable] Memory: {stats['sessions']} sessions, "
+            f"{stats['total_words_processed']:,} words processed, "
             f"{stats['kg_entities']} KG entities, "
             f"{stats['sacred_facts']} sacred facts. "
-            f"Use memorable_search_sessions to search, memorable_query_kg for knowledge graph."
+            f"Use memorable_search_sessions to search, memorable_get_startup_seed for full context."
         )
 
     if parts:

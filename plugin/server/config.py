@@ -15,16 +15,9 @@ DEFAULTS = {
     "db_path": str(Path.home() / ".memorable" / "memorable.db"),
     "transcript_dirs": [str(Path.home() / ".claude" / "projects")],
 
-    # Processing
-    "processing_model": "deepseek",
-    "deepseek_api_url": "https://api.deepseek.com/chat/completions",
-    "deepseek_api_key": "",
-    "deepseek_model": "deepseek-chat",
-
-    # Local model (Phase 2)
-    "local_model": "ollama",
-    "ollama_url": "http://localhost:11434",
-    "ollama_model": "llama3.1:8b",
+    # LLMLingua compression
+    "compression_rate_storage": 0.50,
+    "compression_rate_skeleton": 0.20,
 
     # Watcher
     "watcher_enabled": True,
@@ -32,9 +25,9 @@ DEFAULTS = {
     "min_messages": 15,
     "min_human_words": 100,
 
-    # Rolling summaries
-    "summary_days": 5,
-    "summary_max_sessions": 20,
+    # Startup seed
+    "seed_recent_compressed": 3,   # sessions at 0.50 in seed
+    "seed_skeleton_count": 20,     # sessions at 0.20 in seed
 
     # Context seeds
     "live_capture_interval": 20,  # messages between captures
@@ -68,9 +61,4 @@ class Config:
         return self._data[key]
 
     def as_dict(self) -> dict:
-        # Return config without sensitive keys
-        safe = dict(self._data)
-        for key in ("deepseek_api_key",):
-            if key in safe and safe[key]:
-                safe[key] = safe[key][:8] + "..."
-        return safe
+        return dict(self._data)
