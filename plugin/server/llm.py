@@ -17,14 +17,13 @@ def _find_claude() -> str | None:
     return shutil.which("claude")
 
 
-def call_llm(prompt: str, system: str = "", max_tokens: int = 1024,
+def call_llm(prompt: str, system: str = "",
              model: str = "sonnet") -> str:
     """Call a Claude model via the claude CLI in --print mode.
 
     Args:
         prompt: The user prompt to send.
-        system: Optional system prompt (appended via --append-system-prompt).
-        max_tokens: Max tokens for response (via --max-tokens).
+        system: Optional system prompt.
         model: Model to use — "sonnet" (default), "haiku", or "opus".
 
     Returns:

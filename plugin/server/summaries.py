@@ -36,7 +36,7 @@ def generate_rolling_summary(config: Config, db: MemorableDB) -> str | None:
     Returns the summary text, or None if generation failed or
     there are no sessions to summarize.
     """
-    sessions = db.get_recent_sessions(days=5, limit=20)
+    sessions = db.get_recent_sessions(days=5, limit=10)
     if not sessions:
         return None
 
@@ -76,24 +76,34 @@ def generate_rolling_summary(config: Config, db: MemorableDB) -> str | None:
     today = datetime.now().strftime("%Y-%m-%d")
 
     prompt = (
-        f"Summarize the last 5 days of activity from these {len(sessions)} sessions. "
-        f"Today is {today}.\n\n"
-        f"Write a concise rolling summary (3-6 paragraphs) covering:\n"
-        f"1. What was worked on and accomplished\n"
-        f"2. Key decisions made\n"
-        f"3. Current state / what's in progress\n\n"
-        f"Be specific — use project names, file names, tools mentioned. "
-        f"Write in third person ('The user worked on...'). No bullet points.\n\n"
+        f"Summarize these {len(sessions)} recent sessions.\n\n"
+        f"Write 2-4 short paragraphs covering what was worked on, "
+        f"key decisions, and current state. Use project names and specifics. "
+        f"Third person. No preamble — start directly with the summary.\n\n"
         f"Sessions:\n{sessions_text}"
     )
 
     system = (
-        "You generate concise rolling summaries of development activity. "
-        "Focus on facts: what changed, what was decided, what's next. "
-        "No filler, no encouragement, no questions."
+        "Output ONLY the summary text. No thinking, no preamble, no "
+        "markdown headers, no meta-commentary. Start with the first "
+        "paragraph immediately."
     )
 
     summary = call_llm(prompt, system=system, model="haiku")
+    if summary:
+        # Strip any preamble Haiku might add before the actual summary
+        lines = summary.strip().split("\n")
+        # Remove lines that look like thinking/preamble
+        while lines and (
+            lines[0].startswith("---")
+            or lines[0].startswith("## ")
+            or lines[0].startswith("Now ")
+            or lines[0].startswith("Let me ")
+            or lines[0].startswith("I ")
+            or not lines[0].strip()
+        ):
+            lines.pop(0)
+        summary = "\n".join(lines).strip()
     if not summary:
         return None
 
