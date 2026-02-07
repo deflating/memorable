@@ -6,7 +6,6 @@ metadata using lightweight NLP tools:
 
 - YAKE: unsupervised keyword extraction (~10MB, no models)
 - GLiNER: zero-shot named entity recognition (~200MB on disk)
-- Apple NLTagger: on-device sentiment scoring (0MB, macOS built-in)
 - Apple Foundation Model: emoji tag headers only
 
 No LLM-generated summaries. The compressed transcript is the primary
@@ -230,7 +229,7 @@ class TranscriptProcessor:
         header = re.sub(r'\s*\|\s*$', '', header)  # trailing pipe
         return header
 
-    # ── Metadata Extraction (YAKE + GLiNER + sentiment) ────
+    # ── Metadata Extraction (YAKE + GLiNER) ─────────────────
 
     def _extract_metadata(self, conversation_text: str) -> dict:
         """Extract structured metadata from conversation using lightweight NLP."""
@@ -287,32 +286,7 @@ class TranscriptProcessor:
             metadata["entities"] = {}
             metadata["entities_error"] = str(e)
 
-        # Apple NLTagger sentiment (via Swift CLI)
-        try:
-            metadata["sentiment"] = self._extract_sentiment(conversation_text)
-        except Exception as e:
-            metadata["sentiment"] = {"average": 0.0, "label": "unknown"}
-            metadata["sentiment_error"] = str(e)
-
         return metadata
-
-    def _extract_sentiment(self, text: str) -> dict:
-        """Run Apple NLTagger sentiment scoring via the compiled Swift extractor."""
-        extractor_path = Path(__file__).parent / "nlp_extract"
-        if not extractor_path.exists():
-            return {"average": 0.0, "label": "unavailable"}
-
-        try:
-            result = subprocess.run(
-                [str(extractor_path)],
-                input=text, capture_output=True, text=True, timeout=30
-            )
-            if result.returncode == 0:
-                data = json.loads(result.stdout)
-                return data.get("sentiment", {"average": 0.0, "label": "unknown"})
-        except Exception:
-            pass
-        return {"average": 0.0, "label": "unknown"}
 
     # ── Transcript Extraction ─────────────────────────────────
 

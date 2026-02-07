@@ -114,7 +114,7 @@ class MemorableMCP:
         """Build startup context:
         - Sacred facts (always)
         - record_significant entries (always)
-        - Recent sessions (keywords, entities, sentiment, emoji headers)
+        - Recent sessions (keywords, entities, emoji headers)
         """
         parts = []
 
@@ -149,7 +149,7 @@ class MemorableMCP:
                 if summary:
                     parts.append(f"Keywords: {summary}")
 
-                # Include entity and sentiment metadata if available
+                # Include entity metadata if available
                 metadata_raw = s.get("metadata", "{}")
                 try:
                     metadata = json.loads(metadata_raw) if metadata_raw else {}
@@ -164,10 +164,6 @@ class MemorableMCP:
                         entity_parts.append(f"{label}: {', '.join(names)}")
                     if entity_parts:
                         parts.append("Entities: " + " | ".join(entity_parts))
-
-                sentiment = metadata.get("sentiment", {})
-                if sentiment and sentiment.get("label") not in (None, "unknown", "unavailable"):
-                    parts.append(f"Sentiment: {sentiment['label']} ({sentiment.get('average', 0):.2f})")
 
         if not parts:
             return "No memory data yet. This is a fresh Memorable installation."
@@ -385,7 +381,7 @@ class MemorableMCP:
             f"- User prompts captured: {stats.get('user_prompts', 0)}",
             f"- Pending transcripts: {stats['pending_transcripts']}",
             f"\n### Config",
-            f"- Processing: LLMLingua-2 (compression) + YAKE/GLiNER/NLTagger (metadata) + Apple FM (headers)",
+            f"- Processing: LLMLingua-2 (compression) + YAKE/GLiNER (metadata) + Apple FM (headers)",
             f"- Storage compression: {config_info.get('compression_rate_storage')}",
             f"- Seed: last {config_info.get('seed_session_count', 10)} session notes",
             f"- Watcher enabled: {config_info.get('watcher_enabled')}",
