@@ -58,8 +58,12 @@ def _get_yake():
 def _get_gliner():
     global _gliner_model
     if _gliner_model is None:
-        from gliner import GLiNER
-        _gliner_model = GLiNER.from_pretrained("urchade/gliner_small-v2.1")
+        try:
+            from gliner import GLiNER
+            _gliner_model = GLiNER.from_pretrained("urchade/gliner_small-v2.1")
+        except Exception as e:
+            print(f"    GLiNER model unavailable (first run requires internet): {e}")
+            return None
     return _gliner_model
 
 
@@ -250,6 +254,8 @@ class TranscriptProcessor:
         # GLiNER entity extraction
         try:
             model = _get_gliner()
+            if model is None:
+                raise RuntimeError("GLiNER model not loaded")
             labels = ["person", "technology", "software tool", "hardware",
                        "operating system", "command"]
             words = conversation_text.split()

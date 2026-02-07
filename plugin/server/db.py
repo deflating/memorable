@@ -158,7 +158,7 @@ class MemorableDB:
         def do(conn):
             cur = conn.execute(
                 """SELECT id, transcript_id, date, title, summary, header,
-                          message_count, word_count
+                          message_count, word_count, metadata
                    FROM sessions
                    ORDER BY date DESC
                    LIMIT ?""",

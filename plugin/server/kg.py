@@ -405,7 +405,7 @@ def sonnet_filter_entities(candidates: list[dict]) -> list[dict]:
     )
 
     prompt = (
-        f"I'm building a personal knowledge graph from coding sessions. "
+        f"I'm building a personal knowledge graph from conversations. "
         f"A small on-device model extracted these entity candidates. "
         f"Most are GARBAGE. Be extremely selective — when in doubt, reject.\n\n"
         f"KEEP only:\n"

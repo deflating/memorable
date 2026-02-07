@@ -114,7 +114,7 @@ class MemorableMCP:
         """Build startup context:
         - Sacred facts (always)
         - record_significant entries (always)
-        - Recent session notes (Apple model summaries with emoji headers)
+        - Recent sessions (keywords, entities, sentiment, emoji headers)
         """
         parts = []
 
@@ -135,7 +135,7 @@ class MemorableMCP:
                 for e in sig_entries:
                     parts.append(f"- **{e['name']}** (p:{e['priority']}): {e.get('description', '')}")
 
-        # Recent session summaries
+        # Recent session summaries with metadata
         seed_count = self.config.get("seed_session_count", 10)
         recent = self.db.get_recent_summaries(limit=seed_count)
         if recent:
@@ -147,7 +147,27 @@ class MemorableMCP:
                 if header:
                     parts.append(header)
                 if summary:
-                    parts.append(summary)
+                    parts.append(f"Keywords: {summary}")
+
+                # Include entity and sentiment metadata if available
+                metadata_raw = s.get("metadata", "{}")
+                try:
+                    metadata = json.loads(metadata_raw) if metadata_raw else {}
+                except (json.JSONDecodeError, TypeError):
+                    metadata = {}
+
+                entities = metadata.get("entities", {})
+                if entities:
+                    entity_parts = []
+                    for label, ents in entities.items():
+                        names = [e["name"] for e in ents[:5]]
+                        entity_parts.append(f"{label}: {', '.join(names)}")
+                    if entity_parts:
+                        parts.append("Entities: " + " | ".join(entity_parts))
+
+                sentiment = metadata.get("sentiment", {})
+                if sentiment and sentiment.get("label") not in (None, "unknown", "unavailable"):
+                    parts.append(f"Sentiment: {sentiment['label']} ({sentiment.get('average', 0):.2f})")
 
         if not parts:
             return "No memory data yet. This is a fresh Memorable installation."
@@ -365,7 +385,7 @@ class MemorableMCP:
             f"- User prompts captured: {stats.get('user_prompts', 0)}",
             f"- Pending transcripts: {stats['pending_transcripts']}",
             f"\n### Config",
-            f"- Processing: LLMLingua-2 (compression) + Apple Foundation Model (summaries)",
+            f"- Processing: LLMLingua-2 (compression) + YAKE/GLiNER/NLTagger (metadata) + Apple FM (headers)",
             f"- Storage compression: {config_info.get('compression_rate_storage')}",
             f"- Seed: last {config_info.get('seed_session_count', 10)} session notes",
             f"- Watcher enabled: {config_info.get('watcher_enabled')}",
