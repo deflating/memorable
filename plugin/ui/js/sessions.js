@@ -1,13 +1,143 @@
 /**
  * Session detail view: full session with its observations and prompts.
  * Renders the detail page when a session card is clicked.
+ * Includes mini stats (observation type counts) and jump-to-top button.
  */
 
 import { esc } from './utils.js';
-import { renderTimelineItem } from './components.js';
+import { renderTimelineItem, countObservationTypes, badgeLabel, typeColors } from './components.js';
+
+/** Render mini stat pills showing observation type counts */
+function renderMiniStats(observations, prompts) {
+  const counts = countObservationTypes(observations);
+  if (prompts.length) counts.prompt = prompts.length;
+
+  const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  if (!entries.length) return '';
+
+  const containerStyle = `
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 14px;
+  `.replace(/\n\s*/g, ' ').trim();
+
+  const pillStyle = (color) => `
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 10px;
+    border-radius: 100px;
+    font-size: 11px;
+    font-weight: 600;
+    background: ${color}14;
+    color: ${color};
+    border: 1px solid ${color}22;
+    letter-spacing: 0.2px;
+  `.replace(/\n\s*/g, ' ').trim();
+
+  return `<div style="${containerStyle}">
+    ${entries.map(([type, count]) => {
+      const color = typeColors[type] || '#94a3b8';
+      return `<span style="${pillStyle(color)}">
+        <span style="width: 6px; height: 6px; border-radius: 50%; background: ${color};"></span>
+        ${count} ${badgeLabel(type)}${count !== 1 ? 's' : ''}
+      </span>`;
+    }).join('')}
+  </div>`;
+}
+
+/** Inject (or remove) the jump-to-top floating button */
+function setupJumpToTop() {
+  // Remove any existing button
+  const existing = document.getElementById('feat-jump-top');
+  if (existing) existing.remove();
+
+  const btn = document.createElement('button');
+  btn.id = 'feat-jump-top';
+  btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 12V4M4 7l4-4 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  btn.setAttribute('style', `
+    position: fixed;
+    bottom: 28px;
+    right: 28px;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: #151d27;
+    border: 1px solid #1e2a38;
+    color: #94a3b8;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    pointer-events: none;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    z-index: 50;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+  `.replace(/\n\s*/g, ' ').trim());
+
+  btn.addEventListener('click', () => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+  btn.addEventListener('mouseenter', () => {
+    btn.style.borderColor = '#f0c00066';
+    btn.style.color = '#f0c000';
+    btn.style.boxShadow = '0 2px 12px rgba(240,192,0,0.15)';
+  });
+  btn.addEventListener('mouseleave', () => {
+    btn.style.borderColor = '#1e2a38';
+    btn.style.color = '#94a3b8';
+    btn.style.boxShadow = '0 2px 8px rgba(0,0,0,0.3)';
+  });
+
+  document.body.appendChild(btn);
+
+  const onScroll = () => {
+    if (window.scrollY > 300) {
+      btn.style.opacity = '1';
+      btn.style.pointerEvents = 'auto';
+    } else {
+      btn.style.opacity = '0';
+      btn.style.pointerEvents = 'none';
+    }
+  };
+
+  window.addEventListener('scroll', onScroll, { passive: true });
+
+  // Store cleanup reference
+  btn._cleanup = () => {
+    window.removeEventListener('scroll', onScroll);
+    btn.remove();
+  };
+}
+
+/** Clean up jump-to-top button when leaving session detail */
+function cleanupJumpToTop() {
+  const btn = document.getElementById('feat-jump-top');
+  if (btn && btn._cleanup) btn._cleanup();
+  else if (btn) btn.remove();
+}
+
+// Hook into the goBack flow to clean up.
+// Wrap lazily since app.js sets window._goBack after this module loads.
+let _goBackWrapped = false;
+function wrapGoBack() {
+  if (_goBackWrapped) return;
+  _goBackWrapped = true;
+  const originalGoBack = window._goBack;
+  window._goBack = function() {
+    cleanupJumpToTop();
+    if (originalGoBack) originalGoBack();
+  };
+}
 
 export function renderSessionDetail(session, observations, prompts) {
   const s = session;
+
+  // Wrap goBack to clean up jump-to-top, then setup on next tick
+  wrapGoBack();
+  setTimeout(setupJumpToTop, 0);
 
   let html = `<button class="back-btn" onclick="window._goBack()">
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M10 3L5 8l5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -27,6 +157,7 @@ export function renderSessionDetail(session, observations, prompts) {
     ${s.summary || s.header
       ? `<div class="detail-summary">${esc(s.summary || s.header)}</div>`
       : ''}
+    ${renderMiniStats(observations, prompts)}
   </div>`;
 
   const timeline = [
@@ -40,8 +171,9 @@ export function renderSessionDetail(session, observations, prompts) {
     html += `</div>`;
   } else {
     html += `<div class="empty">
-      <div class="empty-icon">~</div>
-      No observations or prompts recorded for this session.
+      <div style="font-size: 36px; margin-bottom: 14px; opacity: 0.25;">&#128065;</div>
+      <div style="color: #94a3b8; font-size: 15px; font-weight: 500; margin-bottom: 8px;">No activity recorded</div>
+      <div style="color: #64748b; font-size: 13px; line-height: 1.6;">This session has no observations or prompts.<br>Activity is captured automatically during Claude Code use.</div>
     </div>`;
   }
 

@@ -15,6 +15,13 @@ import { loadKG, stopKG } from './kg.js';
 const API = '';
 let currentTab = 'timeline';
 let searchTimeout = null;
+let kbFocusIndex = -1;
+
+// ── Inject kb-focus style ──
+
+const kbStyle = document.createElement('style');
+kbStyle.textContent = `.kb-focus { outline: 2px solid #f0c000; outline-offset: 2px; border-radius: 10px; }`;
+document.head.appendChild(kbStyle);
 
 // ── API ──
 
@@ -22,6 +29,56 @@ async function api(path) {
   const r = await fetch(API + path);
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
   return r.json();
+}
+
+// ── Hash Routing ──
+
+function updateHash(tab, extra) {
+  let hash = '#' + tab;
+  if (extra) hash += extra;
+  if (location.hash !== hash) history.replaceState(null, '', hash);
+}
+
+function parseHash() {
+  const hash = location.hash.slice(1);
+  if (!hash) return { tab: 'timeline' };
+  if (hash.startsWith('session/')) return { tab: 'sessions', sessionId: hash.slice(8) };
+  if (hash.startsWith('search?')) {
+    const params = new URLSearchParams(hash.slice(7));
+    return { tab: currentTab, query: params.get('q') || '' };
+  }
+  if (['timeline', 'sessions', 'kg'].includes(hash)) return { tab: hash };
+  return { tab: 'timeline' };
+}
+
+function setActiveTab(tab) {
+  document.querySelectorAll('.tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.tab === tab);
+  });
+  currentTab = tab;
+}
+
+// ── Searching Indicator ──
+
+function showSearchingIndicator() {
+  let el = document.getElementById('searching-indicator');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'searching-indicator';
+    el.style.cssText = 'position:absolute;right:36px;top:50%;transform:translateY(-50%);color:#8a919e;font-size:0.75rem;pointer-events:none';
+    el.textContent = 'Searching\u2026';
+    const box = document.querySelector('.search-box');
+    if (box) {
+      box.style.position = 'relative';
+      box.appendChild(el);
+    }
+  }
+  el.style.display = 'block';
+}
+
+function hideSearchingIndicator() {
+  const el = document.getElementById('searching-indicator');
+  if (el) el.style.display = 'none';
 }
 
 // ── Data Loading ──
@@ -40,7 +97,15 @@ async function loadStats() {
 
 async function loadTab(tab, query) {
   stopKG();
+  kbFocusIndex = -1;
   const content = document.getElementById('content');
+
+  // Update hash
+  if (query) {
+    updateHash('search', '?q=' + encodeURIComponent(query));
+  } else {
+    updateHash(tab);
+  }
 
   // Show skeleton loading
   if (tab !== 'kg') {
@@ -51,10 +116,12 @@ async function loadTab(tab, query) {
     content.innerHTML = '<div class="loading"><span class="loading-dots">Loading graph</span></div>';
   }
 
+  hideSearchingIndicator();
+
   try {
     if (query) {
       const data = await api(`/api/search?q=${encodeURIComponent(query)}&limit=50`);
-      content.innerHTML = renderSearch(data);
+      content.innerHTML = renderSearch(data, query);
       return;
     }
 
@@ -86,6 +153,7 @@ async function loadTab(tab, query) {
 
 async function loadSessionDetailView(tid) {
   if (!tid) return;
+  updateHash('session', '/' + tid);
   const content = document.getElementById('content');
   content.innerHTML = '<div class="loading"><span class="loading-dots">Loading session</span></div>';
   document.querySelector('.tabs').style.display = 'none';
@@ -107,6 +175,7 @@ async function loadSessionDetailView(tid) {
 
 function goBack() {
   document.querySelector('.tabs').style.display = 'flex';
+  updateHash('sessions');
   loadTab('sessions');
 }
 
@@ -114,23 +183,50 @@ function goBack() {
 window._loadSessionDetail = loadSessionDetailView;
 window._goBack = goBack;
 
+// ── Keyboard Navigation ──
+
+function getCards() {
+  return Array.from(document.querySelectorAll('#content .card'));
+}
+
+function updateKbFocus(newIndex) {
+  const cards = getCards();
+  if (!cards.length) return;
+
+  // Remove old focus
+  cards.forEach(c => c.classList.remove('kb-focus'));
+
+  // Clamp index
+  kbFocusIndex = Math.max(0, Math.min(newIndex, cards.length - 1));
+  const card = cards[kbFocusIndex];
+  card.classList.add('kb-focus');
+  card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
 // ── Event Handlers ──
 
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
-    document.querySelector('.tab.active').classList.remove('active');
-    tab.classList.add('active');
-    currentTab = tab.dataset.tab;
+    setActiveTab(tab.dataset.tab);
     const q = document.getElementById('search').value.trim();
     loadTab(currentTab, q);
   });
 });
 
 const searchInput = document.getElementById('search');
+searchInput.placeholder = 'Search observations, prompts\u2026  \u2318K';
+
 searchInput.addEventListener('input', (e) => {
   clearTimeout(searchTimeout);
+  const val = e.target.value.trim();
+  if (val) {
+    showSearchingIndicator();
+  } else {
+    hideSearchingIndicator();
+  }
   searchTimeout = setTimeout(() => {
-    loadTab(currentTab, e.target.value.trim());
+    hideSearchingIndicator();
+    loadTab(currentTab, val);
   }, 300);
 });
 
@@ -141,16 +237,86 @@ document.addEventListener('keydown', e => {
     e.preventDefault();
     searchInput.focus();
     searchInput.select();
+    return;
   }
   // Esc to clear search
   if (e.key === 'Escape' && document.activeElement === searchInput) {
     searchInput.value = '';
     searchInput.blur();
+    hideSearchingIndicator();
+    clearTimeout(searchTimeout);
     loadTab(currentTab);
+    return;
+  }
+
+  // Arrow key navigation between cards
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    if (document.activeElement === searchInput) return;
+    e.preventDefault();
+    const cards = getCards();
+    if (!cards.length) return;
+    if (e.key === 'ArrowDown') {
+      updateKbFocus(kbFocusIndex + 1);
+    } else {
+      updateKbFocus(kbFocusIndex - 1);
+    }
+    return;
+  }
+
+  // Enter to open focused session card
+  if (e.key === 'Enter' && document.activeElement !== searchInput) {
+    const cards = getCards();
+    if (kbFocusIndex >= 0 && kbFocusIndex < cards.length) {
+      const card = cards[kbFocusIndex];
+      if (card.classList.contains('session-card')) {
+        card.click();
+      }
+    }
+    return;
+  }
+
+  // Auto-focus search on typing (printable characters, not in search already)
+  if (document.activeElement !== searchInput
+      && !e.metaKey && !e.ctrlKey && !e.altKey
+      && e.key.length === 1) {
+    searchInput.focus();
+    // The keystroke will naturally be captured by the now-focused input
+  }
+});
+
+// ── Hash Change Listener ──
+
+window.addEventListener('hashchange', () => {
+  const route = parseHash();
+  if (route.sessionId) {
+    loadSessionDetailView(route.sessionId);
+  } else {
+    document.querySelector('.tabs').style.display = 'flex';
+    setActiveTab(route.tab);
+    if (route.query) {
+      searchInput.value = route.query;
+      loadTab(route.tab, route.query);
+    } else {
+      loadTab(route.tab);
+    }
   }
 });
 
 // ── Init ──
 
 loadStats();
-loadTab('timeline');
+
+// Route from hash on initial load
+const initRoute = parseHash();
+if (initRoute.sessionId) {
+  setActiveTab('sessions');
+  loadSessionDetailView(initRoute.sessionId);
+} else {
+  setActiveTab(initRoute.tab);
+  if (initRoute.query) {
+    searchInput.value = initRoute.query;
+    loadTab(initRoute.tab, initRoute.query);
+  } else {
+    loadTab(initRoute.tab);
+  }
+}
