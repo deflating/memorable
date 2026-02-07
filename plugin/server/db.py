@@ -50,11 +50,16 @@ class MemorableDB:
     def _connect(self):
         """Open a connection — embedded replica if sync_url is set, local otherwise."""
         if self.sync_url and HAS_LIBSQL:
-            kwargs = {"sync_url": self.sync_url}
-            if self.auth_token:
-                kwargs["auth_token"] = self.auth_token
-            conn = libsql.connect(str(self.db_path), **kwargs)
-        elif HAS_LIBSQL:
+            try:
+                kwargs = {"sync_url": self.sync_url}
+                if self.auth_token:
+                    kwargs["auth_token"] = self.auth_token
+                conn = libsql.connect(str(self.db_path), **kwargs)
+                return conn
+            except (ValueError, Exception):
+                # Sync server unreachable — fall back to local-only
+                pass
+        if HAS_LIBSQL:
             conn = libsql.connect(str(self.db_path))
         else:
             import sqlite3

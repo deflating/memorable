@@ -3,6 +3,7 @@
 Usage:
     python -m server              # Run MCP server (stdio)
     python -m server --watch      # Run with transcript watcher
+    python -m server --watcher    # Run watcher only (no MCP server, for launchd)
     python -m server --process    # Process pending transcripts and exit
     python -m server --init       # Initialize config and database
 """
@@ -20,6 +21,8 @@ def main():
     parser = argparse.ArgumentParser(description="Memorable MCP server")
     parser.add_argument("--watch", action="store_true",
                         help="Start transcript file watcher in background thread")
+    parser.add_argument("--watcher", action="store_true",
+                        help="Run watcher only in foreground (for launchd)")
     parser.add_argument("--process", action="store_true",
                         help="Process pending transcripts and exit")
     parser.add_argument("--init", action="store_true",
@@ -36,6 +39,10 @@ def main():
 
     if args.process:
         _process(config)
+        return
+
+    if args.watcher:
+        _run_watcher(config)
         return
 
     # Default: run as MCP server
@@ -67,6 +74,14 @@ def _process(config: Config):
     from .processor import TranscriptProcessor
     processor = TranscriptProcessor(config)
     processor.process_all()
+
+
+def _run_watcher(config: Config):
+    """Run the watcher in foreground (for launchd daemon)."""
+    from .watcher import TranscriptWatcher
+    print("Memorable watcher starting...", file=sys.stderr)
+    watcher = TranscriptWatcher(config)
+    watcher.start()  # blocks
 
 
 def _start_watcher(config: Config):
