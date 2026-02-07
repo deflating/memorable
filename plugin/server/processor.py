@@ -49,11 +49,14 @@ def _summarize_with_haiku(conversation_text: str, model: str = "haiku") -> str:
         )
         if result.returncode == 0 and result.stdout.strip():
             text = result.stdout.strip()
-            # Strip preamble lines like "I'll summarize this..." or "Here's a summary:"
+            # Strip preamble lines — Haiku sometimes narrates before summarizing
             lines = text.split('\n')
             while lines and any(lines[0].lower().startswith(p) for p in [
                 "i'll ", "i will ", "here's ", "here is ", "let me ", "sure",
-                "---", "##"
+                "i see the session", "i'm a transcript", "i'm the transcript",
+                "looking at the full session", "now i understand",
+                "based on the ", "no observation",
+                "---", "##",
             ]):
                 lines.pop(0)
             return '\n'.join(lines).strip() or text
@@ -179,6 +182,18 @@ class TranscriptProcessor:
             return
         if total_words > 0 and (human_words / total_words) < 0.05:
             self.db.mark_processed(queue_item["id"], error="Autonomous session (low human ratio)")
+            return
+
+        # Skip observer/watcher sessions — they just watch other sessions
+        first_assistant = next((m["text"] for m in messages if m["role"] == "assistant"), "")
+        observer_phrases = [
+            "i'm ready to observe", "i'll observe", "i'll monitor",
+            "i need to observe", "ready to observe and record",
+            "monitor the primary session", "observe the primary",
+        ]
+        if any(first_assistant.lower().startswith(p) or p in first_assistant.lower()[:200]
+               for p in observer_phrases):
+            self.db.mark_processed(queue_item["id"], error="Observer/watcher session")
             return
 
         conversation_text = self._format_conversation(messages)
@@ -382,6 +397,11 @@ class TranscriptProcessor:
             if "scheduled moment just for you" in text.lower():
                 continue
             if text.startswith("Caveat:") or text.startswith("PROGRESS SUMMARY"):
+                continue
+            # Skip transcript artifacts and context recovery noise
+            if "Claude's Full Response" in text or "Full Response to User" in text:
+                continue
+            if text.startswith("Claude:") or text.startswith("User:"):
                 continue
             # Skip lines that are just timestamps or UUIDs
             if re.match(r'^[\d\-T:\.Z]+$', text) or re.match(r'^[a-f0-9\-]{36}$', text):
