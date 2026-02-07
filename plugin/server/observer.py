@@ -264,12 +264,13 @@ class ObservationProcessor:
         )
 
     def process_queue(self):
-        """Process all pending observations."""
+        """Process all pending observations, then extract KG data."""
         pending = self.db.get_pending_observations(limit=50)
         if not pending:
             return
 
         groups = self._group_and_deduplicate(pending)
+        new_observations = []
 
         for group in groups:
             try:
@@ -289,6 +290,14 @@ class ObservationProcessor:
                     )
                     for qid in group["_queue_ids"]:
                         self.db.mark_observation_queued(qid, obs_id)
+                    new_observations.append({
+                        "session_id": group["session_id"],
+                        "title": obs["title"],
+                        "summary": obs["summary"],
+                        "tool_name": group["tool_name"],
+                        "tool_input": group.get("tool_input", "")[:500],
+                        "tool_response": group.get("tool_response", "")[:500],
+                    })
                 else:
                     for qid in group["_queue_ids"]:
                         self.db.mark_observation_queued(qid)
@@ -296,6 +305,19 @@ class ObservationProcessor:
                 print(f"  Observation error: {e}")
                 for qid in group.get("_queue_ids", []):
                     self.db.mark_observation_queued(qid)
+
+        # KG extraction on new observations
+        if new_observations:
+            try:
+                from .kg import KGProcessor
+                if not hasattr(self, '_kg_processor'):
+                    self._kg_processor = KGProcessor(self.config)
+                result = self._kg_processor.process_observations(new_observations)
+                if result["entities_added"] or result["relationships_added"]:
+                    print(f"  KG: +{result['entities_added']} entities, "
+                          f"+{result['relationships_added']} relationships")
+            except Exception as e:
+                print(f"  KG extraction error: {e}")
 
     def _group_and_deduplicate(self, pending: list[dict]) -> list[dict]:
         """Group consecutive tool calls and merge redundant ones."""
