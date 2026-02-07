@@ -195,10 +195,6 @@ class TranscriptProcessor:
         metadata = self._extract_metadata(conversation_text)
         metadata_json = json.dumps(metadata)
 
-        # Build keyword summary for search index
-        kw_list = [kw for kw, _ in metadata.get("keywords", [])]
-        keyword_summary = ", ".join(kw_list) if kw_list else ""
-
         # Extract title from human messages, fall back to header's first tag
         title = self._extract_title(messages)
         if title == "Untitled session" and header:
@@ -210,13 +206,15 @@ class TranscriptProcessor:
                 title = tag_text
 
         # Store in database
+        # summary = Haiku summary (the actual readable content)
+        # compressed_50 = kept empty (legacy LLMLingua field)
         session_id = self.db.store_session(
             transcript_id=path.stem,
             date=session_date.strftime("%Y-%m-%d"),
             title=title,
-            summary=keyword_summary,
+            summary=summary_text,
             header=header,
-            compressed_50=summary_text,
+            compressed_50="",
             metadata=metadata_json,
             source_path=str(path),
             message_count=len(messages),

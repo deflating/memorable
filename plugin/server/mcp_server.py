@@ -221,11 +221,6 @@ class MemorableMCP:
                 lines.append(s["header"])
             if s.get("summary"):
                 lines.append(s["summary"])
-            elif s.get("compressed_50"):
-                preview = s["compressed_50"][:800]
-                if len(s["compressed_50"]) > 800:
-                    preview += "..."
-                lines.append(preview)
             lines.append("")
 
         return "\n".join(lines)
