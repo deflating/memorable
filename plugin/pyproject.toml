@@ -10,7 +10,6 @@ requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [{name = "Matt Kennelly"}]
 dependencies = [
-    "llmlingua>=0.2",
     "watchdog>=3.0",
     "libsql-experimental>=0.0.50",
     "yake>=0.4",

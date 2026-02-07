@@ -381,8 +381,8 @@ class MemorableMCP:
             f"- User prompts captured: {stats.get('user_prompts', 0)}",
             f"- Pending transcripts: {stats['pending_transcripts']}",
             f"\n### Config",
-            f"- Processing: LLMLingua-2 (compression) + YAKE/GLiNER (metadata) + Apple FM (headers)",
-            f"- Storage compression: {config_info.get('compression_rate_storage')}",
+            f"- Processing: Haiku via claude -p (summaries) + YAKE/GLiNER (metadata) + Apple FM (headers)",
+            f"- Summary model: {config_info.get('summary_model', 'haiku')}",
             f"- Seed: last {config_info.get('seed_session_count', 10)} session notes",
             f"- Watcher enabled: {config_info.get('watcher_enabled')}",
         ]

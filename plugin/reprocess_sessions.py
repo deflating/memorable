@@ -1,7 +1,7 @@
 """Reprocess all transcripts with the current metadata pipeline.
 
 Clears existing sessions and processing queue, then re-runs the full
-processing pipeline (LLMLingua compression + YAKE/GLiNER/NLTagger metadata
+processing pipeline (Haiku summaries via claude -p + YAKE/GLiNER metadata
 extraction + Apple FM headers) on all transcripts.
 
 Usage:
@@ -66,10 +66,10 @@ def main():
             print(f"  1. Keep existing sessions")
             print(f"  2. Only process unprocessed transcripts")
         print(f"  3. Re-scan {len(all_jsonl)} transcript files")
-        print(f"  4. Process with: LLMLingua + YAKE + GLiNER + NLTagger + Apple FM")
+        print(f"  4. Process with: Haiku (claude -p) + YAKE + GLiNER + Apple FM")
         if args.batch:
             print(f"  5. Stop after {args.batch} transcripts")
-        print(f"\nUse --apply to run. This will take a while (LLMLingua + GLiNER per session).")
+        print(f"\nUse --apply to run. This will take a while (Haiku + GLiNER per session).")
         return
 
     # === APPLY MODE ===
@@ -79,8 +79,8 @@ def main():
         # Step 1: Clear sessions and queue
         print(f"\nStep 1: Clearing {stats['sessions']} sessions and processing queue...")
         def clear_all(conn):
-            conn.execute("DELETE FROM sessions")
             conn.execute("DELETE FROM processing_queue")
+            conn.execute("DELETE FROM sessions")
         db._execute(clear_all)
         print("  Done.")
     else:

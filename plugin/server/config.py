@@ -21,8 +21,8 @@ DEFAULTS = {
     "sync_url": "",  # e.g. "http://192.168.68.58:8081"
     "sync_auth_token": "",  # JWT or empty for no auth
 
-    # LLMLingua compression
-    "compression_rate_storage": 0.50,
+    # Summarization
+    "summary_model": "haiku",  # claude -p --model <this>
 
     # Watcher
     "watcher_enabled": True,

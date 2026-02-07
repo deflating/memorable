@@ -1,15 +1,15 @@
 """Transcript processing pipeline for Memorable.
 
-Reads .jsonl transcripts, filters with heuristics, compresses with
-LLMLingua-2 at 0.50 for searchable archive, then extracts structured
-metadata using lightweight NLP tools:
+Reads .jsonl transcripts, filters with heuristics, summarizes with
+Haiku via `claude -p` (uses existing Claude Code subscription),
+then extracts structured metadata using lightweight NLP tools:
 
 - YAKE: unsupervised keyword extraction (~10MB, no models)
 - GLiNER: zero-shot named entity recognition (~200MB on disk)
 - Apple Foundation Model: emoji tag headers only
 
-No LLM-generated summaries. The compressed transcript is the primary
-memory; metadata provides the searchable index.
+The Haiku summary is the primary memory; metadata provides the
+searchable index.
 """
 
 import json
@@ -24,24 +24,45 @@ from .db import MemorableDB
 from .config import Config
 
 
-# Lazy-loaded compressor (LLMLingua model is ~500MB, only load once)
-_compressor = None
-
 # Lazy-loaded extractors
 _yake_extractor = None
 _gliner_model = None
 
 
-def _get_compressor():
-    global _compressor
-    if _compressor is None:
-        from llmlingua import PromptCompressor
-        _compressor = PromptCompressor(
-            model_name="microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank",
-            use_llmlingua2=True,
-            device_map="cpu",
+def _summarize_with_haiku(conversation_text: str, model: str = "haiku") -> str:
+    """Summarize a conversation using claude -p (one-shot CLI, no persistent session)."""
+    system_prompt = (
+        "You are a transcript summarizer. Output ONLY a summary, nothing else. "
+        "No preamble, no meta-commentary, no markdown headers, no '---' dividers. "
+        "Write 2-4 short paragraphs. Cover: what was worked on, key decisions, "
+        "problems encountered, and current status. Be specific with names of "
+        "tools, files, and technical details. Past tense, third person."
+    )
+    try:
+        result = subprocess.run(
+            ["claude", "-p", "--model", model, "--no-session-persistence",
+             "--system-prompt", system_prompt, "--tools", ""],
+            input=conversation_text,
+            capture_output=True,
+            text=True,
+            timeout=120,
         )
-    return _compressor
+        if result.returncode == 0 and result.stdout.strip():
+            text = result.stdout.strip()
+            # Strip preamble lines like "I'll summarize this..." or "Here's a summary:"
+            lines = text.split('\n')
+            while lines and any(lines[0].lower().startswith(p) for p in [
+                "i'll ", "i will ", "here's ", "here is ", "let me ", "sure",
+                "---", "##"
+            ]):
+                lines.pop(0)
+            return '\n'.join(lines).strip() or text
+        error = result.stderr.strip() or f"Exit code {result.returncode}"
+        return f"[Haiku summary failed: {error}]"
+    except subprocess.TimeoutExpired:
+        return "[Haiku summary failed: timeout after 120s]"
+    except FileNotFoundError:
+        return "[Haiku summary failed: claude CLI not found]"
 
 
 def _get_yake():
@@ -96,7 +117,7 @@ class TranscriptProcessor:
         self.min_messages = config.get("min_messages", 15)
         self.min_human_words = config.get("min_human_words", 100)
         self.stale_minutes = config.get("stale_minutes", 15)
-        self.rate_storage = config.get("compression_rate_storage", 0.50)
+        self.summary_model = config.get("summary_model", "haiku")
 
     def process_all(self):
         """Scan transcript directories, queue new files, process pending."""
@@ -163,24 +184,20 @@ class TranscriptProcessor:
         conversation_text = self._format_conversation(messages)
         session_date = self._get_session_date(path)
 
-        # Step 1: LLMLingua compression at 0.50
-        compressor = _get_compressor()
-        compressed_50 = compressor.compress_prompt(
-            [conversation_text],
-            rate=self.rate_storage,
-            force_tokens=['\n', '**', ':', '.', '?', '!'],
-        )["compressed_prompt"]
+        # Step 1: Haiku summary via claude -p
+        summary_text = _summarize_with_haiku(conversation_text, model=self.summary_model)
+        print(f"    Summary: {summary_text[:80]}...")
 
-        # Step 2: Apple model generates emoji header from compressed text
-        header = self._generate_header(compressed_50, session_date)
+        # Step 2: Apple model generates emoji header from summary
+        header = self._generate_header(summary_text, session_date)
 
-        # Step 3: Extract structured metadata (YAKE + GLiNER + sentiment)
+        # Step 3: Extract structured metadata (YAKE + GLiNER)
         metadata = self._extract_metadata(conversation_text)
         metadata_json = json.dumps(metadata)
 
-        # Build summary from keywords (flat, searchable)
+        # Build keyword summary for search index
         kw_list = [kw for kw, _ in metadata.get("keywords", [])]
-        summary = ", ".join(kw_list) if kw_list else ""
+        keyword_summary = ", ".join(kw_list) if kw_list else ""
 
         # Extract title from human messages, fall back to header's first tag
         title = self._extract_title(messages)
@@ -197,9 +214,9 @@ class TranscriptProcessor:
             transcript_id=path.stem,
             date=session_date.strftime("%Y-%m-%d"),
             title=title,
-            summary=summary,
+            summary=keyword_summary,
             header=header,
-            compressed_50=compressed_50,
+            compressed_50=summary_text,
             metadata=metadata_json,
             source_path=str(path),
             message_count=len(messages),
@@ -332,6 +349,10 @@ class TranscriptProcessor:
 
     def _clean_text(self, text: str) -> str:
         text = re.sub(r'<system-reminder>.*?</system-reminder>', '', text, flags=re.DOTALL)
+        # Strip observation XML blocks (from Memorable hooks)
+        text = re.sub(r'<observation>.*?</observation>', '', text, flags=re.DOTALL)
+        # Strip PROGRESS SUMMARY blocks
+        text = re.sub(r'PROGRESS SUMMARY[:\s].*?(?=\n\n|\Z)', '', text, flags=re.DOTALL)
         # Strip Read tool line number prefixes (e.g. "   165→ ")
         text = re.sub(r'^\s*\d+→\s?', '', text, flags=re.MULTILINE)
         text = self._clean_signal(text)
