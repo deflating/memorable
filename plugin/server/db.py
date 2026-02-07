@@ -267,6 +267,43 @@ class MemorableDB:
             return _rows_to_dicts(cur)
         return self._query(do)
 
+    def delete_entity(self, entity_id: int):
+        """Delete an entity and its relationships."""
+        def do(conn):
+            conn.execute("DELETE FROM kg_relationships WHERE source_id = ? OR target_id = ?",
+                         (entity_id, entity_id))
+            conn.execute("DELETE FROM kg_entities WHERE id = ?", (entity_id,))
+        self._execute(do)
+
+    def delete_entities_below_priority(self, min_priority: int) -> int:
+        """Delete all entities (and their relationships) below a priority threshold.
+        Returns count of deleted entities."""
+        def do(conn):
+            # Get IDs to delete
+            rows = conn.execute(
+                "SELECT id FROM kg_entities WHERE priority < ?", (min_priority,)
+            ).fetchall()
+            ids = [r[0] for r in rows]
+            if not ids:
+                return 0
+            placeholders = ",".join("?" * len(ids))
+            conn.execute(f"DELETE FROM kg_relationships WHERE source_id IN ({placeholders}) OR target_id IN ({placeholders})",
+                         ids + ids)
+            conn.execute(f"DELETE FROM kg_entities WHERE id IN ({placeholders})", ids)
+            return len(ids)
+        return self._execute(do)
+
+    def get_all_entities(self, limit: int = 5000) -> list[dict]:
+        """Get all entities with their IDs for cleanup operations."""
+        def do(conn):
+            cur = conn.execute(
+                """SELECT id, name, type, description, priority
+                   FROM kg_entities ORDER BY priority DESC, name LIMIT ?""",
+                (limit,)
+            )
+            return _rows_to_dicts(cur)
+        return self._query(do)
+
     def get_sacred_facts(self) -> list[dict]:
         def do(conn):
             cur = conn.execute(

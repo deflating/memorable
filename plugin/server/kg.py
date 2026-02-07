@@ -146,8 +146,9 @@ def build_gazetteer(db: MemorableDB) -> dict:
     """
     global _gazetteer, _gazetteer_data
 
-    # Get all entities from DB
-    entities = db.query_kg(limit=5000)
+    # Get only quality entities (priority >= 4 = Sonnet-approved minimum)
+    # This prevents garbage from being amplified via the feedback loop
+    entities = db.query_kg(min_priority=4, limit=5000)
     data = {}
     for e in entities:
         etype = e.get("type", "concept")
@@ -532,12 +533,17 @@ def store_approved_entities(
         db.add_entity(entity["name"], entity["type"], priority=4)
         entities_added += 1
 
+    # Build set of all known entity names (approved + existing in DB)
+    existing = db.query_kg(min_priority=4, limit=5000)
+    existing_names = {e["name"].lower() for e in existing}
+    all_known_names = approved_names | existing_names
+
     for rel in relationships:
         source = rel.get("source", "").strip()
         target = rel.get("target", "").strip()
         pred = rel.get("predicate", "").strip()
-        # Only add relationships where at least one end is approved or already known
-        if not (source.lower() in approved_names or target.lower() in approved_names):
+        # Only add relationships where both ends are known (approved or existing)
+        if not (source.lower() in all_known_names and target.lower() in all_known_names):
             continue
         source_type = _resolve_entity_type(source, all_entities, db)
         target_type = _resolve_entity_type(target, all_entities, db)
