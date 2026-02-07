@@ -151,7 +151,7 @@ class MemorableDB:
     def get_recent_summaries(self, limit: int = 10) -> list[dict]:
         def do(conn):
             cur = conn.execute(
-                """SELECT id, date, title, summary, header,
+                """SELECT id, transcript_id, date, title, summary, header,
                           message_count, word_count
                    FROM sessions
                    ORDER BY date DESC
@@ -159,6 +159,18 @@ class MemorableDB:
                 (limit,)
             )
             return _rows_to_dicts(cur)
+        return self._query(do)
+
+    def get_session_by_transcript_id(self, transcript_id: str) -> dict | None:
+        def do(conn):
+            cur = conn.execute(
+                """SELECT id, transcript_id, date, title, summary, header,
+                          compressed_50, message_count, word_count
+                   FROM sessions
+                   WHERE transcript_id = ?""",
+                (transcript_id,)
+            )
+            return _row_to_dict(cur)
         return self._query(do)
 
     # ── Knowledge Graph ───────────────────────────────────────
@@ -329,6 +341,170 @@ class MemorableDB:
             return row is not None
         return self._query(do)
 
+    # ── Observations ─────────────────────────────────────────
+
+    def queue_observation(self, session_id: str, tool_name: str,
+                          tool_input: str, tool_response: str,
+                          context_before: str = "", context_after: str = "",
+                          cwd: str = "") -> int:
+        def do(conn):
+            cur = conn.execute(
+                """INSERT INTO observations_queue
+                   (session_id, tool_name, tool_input, tool_response,
+                    context_before, context_after, cwd)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (session_id, tool_name, tool_input, tool_response,
+                 context_before, context_after, cwd)
+            )
+            return cur.lastrowid
+        return self._execute(do)
+
+    def get_pending_observations(self, limit: int = 50) -> list[dict]:
+        def do(conn):
+            cur = conn.execute(
+                """SELECT id, session_id, tool_name, tool_input, tool_response,
+                          context_before, context_after, cwd, created_at
+                   FROM observations_queue
+                   WHERE status = 'pending'
+                   ORDER BY created_at ASC
+                   LIMIT ?""",
+                (limit,)
+            )
+            return _rows_to_dicts(cur)
+        return self._query(do)
+
+    def mark_observation_queued(self, queue_id: int, observation_id: int | None = None):
+        status = "processed" if observation_id else "skipped"
+        def do(conn):
+            conn.execute(
+                """UPDATE observations_queue
+                   SET status = ?, processed_at = ?
+                   WHERE id = ?""",
+                (status, time.time(), queue_id)
+            )
+        self._execute(do)
+
+    def store_observation(self, session_id: str, obs_type: str, title: str,
+                          summary: str, files: str = "[]",
+                          embedding: bytes | None = None,
+                          tool_name: str = "") -> int:
+        def do(conn):
+            cur = conn.execute(
+                """INSERT INTO observations
+                   (session_id, observation_type, title, summary, files,
+                    embedding, tool_name)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (session_id, obs_type, title, summary, files,
+                 embedding, tool_name)
+            )
+            return cur.lastrowid
+        return self._execute(do)
+
+    def get_observations_by_session(self, session_id: str,
+                                     limit: int = 50) -> list[dict]:
+        def do(conn):
+            cur = conn.execute(
+                """SELECT id, session_id, observation_type, title, summary,
+                          files, tool_name, created_at
+                   FROM observations
+                   WHERE session_id = ?
+                   ORDER BY created_at ASC
+                   LIMIT ?""",
+                (session_id, limit)
+            )
+            return _rows_to_dicts(cur)
+        return self._query(do)
+
+    def search_observations_keyword(self, query: str,
+                                     limit: int = 20) -> list[dict]:
+        def do(conn):
+            cur = conn.execute(
+                """SELECT id, session_id, observation_type, title, summary,
+                          files, tool_name, created_at
+                   FROM observations
+                   WHERE title LIKE ? OR summary LIKE ?
+                   ORDER BY created_at DESC
+                   LIMIT ?""",
+                (f"%{query}%", f"%{query}%", limit)
+            )
+            return _rows_to_dicts(cur)
+        return self._query(do)
+
+    def get_recent_observations(self, limit: int = 50) -> list[dict]:
+        def do(conn):
+            cur = conn.execute(
+                """SELECT id, session_id, observation_type, title, summary,
+                          files, tool_name, created_at
+                   FROM observations
+                   ORDER BY created_at DESC
+                   LIMIT ?""",
+                (limit,)
+            )
+            return _rows_to_dicts(cur)
+        return self._query(do)
+
+    def get_all_observation_texts(self, limit: int = 5000) -> list[dict]:
+        """Get id + title + summary for all observations (for semantic search)."""
+        def do(conn):
+            cur = conn.execute(
+                """SELECT id, session_id, observation_type, title, summary,
+                          files, tool_name, created_at
+                   FROM observations
+                   ORDER BY created_at DESC
+                   LIMIT ?""",
+                (limit,)
+            )
+            return _rows_to_dicts(cur)
+        return self._query(do)
+
+    # ── User Prompts ─────────────────────────────────────────
+
+    def store_user_prompt(self, session_id: str, prompt_number: int,
+                          prompt_text: str, embedding: bytes | None = None) -> int:
+        def do(conn):
+            cur = conn.execute(
+                """INSERT INTO user_prompts
+                   (session_id, prompt_number, prompt_text, embedding)
+                   VALUES (?, ?, ?, ?)""",
+                (session_id, prompt_number, prompt_text, embedding)
+            )
+            return cur.lastrowid
+        return self._execute(do)
+
+    def search_user_prompts(self, query: str, limit: int = 20) -> list[dict]:
+        def do(conn):
+            cur = conn.execute(
+                """SELECT id, session_id, prompt_number, prompt_text, created_at
+                   FROM user_prompts
+                   WHERE prompt_text LIKE ?
+                   ORDER BY created_at DESC
+                   LIMIT ?""",
+                (f"%{query}%", limit)
+            )
+            return _rows_to_dicts(cur)
+        return self._query(do)
+
+    def get_user_prompts_by_session(self, session_id: str) -> list[dict]:
+        def do(conn):
+            cur = conn.execute(
+                """SELECT id, prompt_number, prompt_text, created_at
+                   FROM user_prompts
+                   WHERE session_id = ?
+                   ORDER BY prompt_number ASC""",
+                (session_id,)
+            )
+            return _rows_to_dicts(cur)
+        return self._query(do)
+
+    def get_prompt_count_for_session(self, session_id: str) -> int:
+        def do(conn):
+            row = conn.execute(
+                "SELECT COUNT(*) FROM user_prompts WHERE session_id = ?",
+                (session_id,)
+            ).fetchone()
+            return row[0] if row else 0
+        return self._query(do)
+
     # ── Stats ─────────────────────────────────────────────────
 
     def get_stats(self) -> dict:
@@ -343,6 +519,9 @@ class MemorableDB:
                 "context_seeds": count("SELECT COUNT(*) FROM context_seeds"),
                 "pending_transcripts": count("SELECT COUNT(*) FROM processing_queue WHERE status = 'pending'"),
                 "total_words_processed": count("SELECT COALESCE(SUM(word_count), 0) FROM sessions"),
+                "observations": count("SELECT COUNT(*) FROM observations"),
+                "pending_observations": count("SELECT COUNT(*) FROM observations_queue WHERE status = 'pending'"),
+                "user_prompts": count("SELECT COUNT(*) FROM user_prompts"),
             }
         return self._query(do)
 
@@ -426,4 +605,49 @@ CREATE TABLE IF NOT EXISTS rolling_summaries (
     session_count INTEGER DEFAULT 0,
     created_at REAL DEFAULT (unixepoch('now'))
 );
+
+CREATE TABLE IF NOT EXISTS observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    observation_type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    files TEXT NOT NULL DEFAULT '[]',
+    embedding BLOB,
+    tool_name TEXT,
+    created_at REAL DEFAULT (unixepoch('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_observations_session ON observations(session_id);
+CREATE INDEX IF NOT EXISTS idx_observations_type ON observations(observation_type);
+CREATE INDEX IF NOT EXISTS idx_observations_created ON observations(created_at);
+
+CREATE TABLE IF NOT EXISTS observations_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    tool_input TEXT NOT NULL,
+    tool_response TEXT NOT NULL,
+    context_before TEXT NOT NULL DEFAULT '',
+    context_after TEXT NOT NULL DEFAULT '',
+    cwd TEXT DEFAULT '',
+    status TEXT DEFAULT 'pending',
+    created_at REAL DEFAULT (unixepoch('now')),
+    processed_at REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_obs_queue_status ON observations_queue(status);
+CREATE INDEX IF NOT EXISTS idx_obs_queue_session ON observations_queue(session_id);
+
+CREATE TABLE IF NOT EXISTS user_prompts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    prompt_number INTEGER NOT NULL,
+    prompt_text TEXT NOT NULL,
+    embedding BLOB,
+    created_at REAL DEFAULT (unixepoch('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_prompts_session ON user_prompts(session_id);
+CREATE INDEX IF NOT EXISTS idx_user_prompts_created ON user_prompts(created_at);
 """

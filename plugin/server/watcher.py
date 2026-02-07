@@ -13,6 +13,7 @@ from watchdog.events import FileSystemEventHandler
 
 from .config import Config
 from .processor import TranscriptProcessor
+from .observer import ObservationProcessor
 
 
 class TranscriptHandler(FileSystemEventHandler):
@@ -57,6 +58,7 @@ class TranscriptWatcher:
     def __init__(self, config: Config):
         self.config = config
         self.processor = TranscriptProcessor(config)
+        self.obs_processor = ObservationProcessor(config)
         self.handler = TranscriptHandler(
             self.processor,
             stale_minutes=config.get("stale_minutes", 15),
@@ -76,11 +78,24 @@ class TranscriptWatcher:
         # Also do an initial scan
         self.processor.process_all()
 
-        # Periodic check for stale files
+        # Periodic check for stale files + observation queue processing
+        obs_interval = self.config.get("observer_process_interval", 30)
+        obs_enabled = self.config.get("observer_enabled", True)
+        last_obs_check = 0
+
         try:
             while True:
-                time.sleep(60)
+                time.sleep(10)
                 self.handler.check_stale()
+
+                # Process observation queue on a separate interval
+                now = time.time()
+                if obs_enabled and (now - last_obs_check) >= obs_interval:
+                    last_obs_check = now
+                    try:
+                        self.obs_processor.process_queue()
+                    except Exception as e:
+                        print(f"Observation processing error: {e}")
         except KeyboardInterrupt:
             self.observer.stop()
         self.observer.join()

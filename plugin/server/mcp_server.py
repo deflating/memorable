@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .db import MemorableDB
 from .config import Config
+from .observer import embed_text, cosine_distance
 
 
 class MemorableMCP:
@@ -84,6 +85,8 @@ class MemorableMCP:
         tool_handlers = {
             "memorable_get_startup_seed": self._tool_get_startup_seed,
             "memorable_search_sessions": self._tool_search_sessions,
+            "memorable_search_observations": self._tool_search_observations,
+            "memorable_get_observations": self._tool_get_observations,
             "memorable_record_significant": self._tool_record_significant,
             "memorable_query_kg": self._tool_query_kg,
             "memorable_get_system_status": self._tool_get_system_status,
@@ -179,6 +182,124 @@ class MemorableMCP:
 
         return "\n".join(lines)
 
+    def _tool_search_observations(self, args: dict) -> str:
+        """Hybrid search across observations AND user prompts."""
+        query = args.get("query", "")
+        limit = args.get("limit", 20)
+        obs_type = args.get("type")
+
+        if not query:
+            return "Please provide a search query."
+
+        scored = []
+
+        # ── Observations: keyword + semantic ──
+        if not obs_type or obs_type != "prompt":
+            keyword_results = self.db.search_observations_keyword(query, limit=limit * 2)
+
+            for obs in keyword_results:
+                text = f"{obs['title']}. {obs['summary']}"
+                dist = cosine_distance(query, text)
+                score = 0.7 * (1.0 - min(dist, 1.0)) + 0.3
+                scored.append((score, "obs", obs))
+
+            # Semantic-only pass on recent observations
+            all_obs = self.db.get_all_observation_texts(limit=500)
+            seen_ids = {obs["id"] for obs in keyword_results}
+            for obs in all_obs:
+                if obs["id"] in seen_ids:
+                    continue
+                text = f"{obs['title']}. {obs['summary']}"
+                dist = cosine_distance(query, text)
+                if dist < 0.6:
+                    score = 0.7 * (1.0 - min(dist, 1.0))
+                    scored.append((score, "obs", obs))
+
+        # ── User prompts: keyword + semantic ──
+        if not obs_type or obs_type == "prompt":
+            keyword_prompts = self.db.search_user_prompts(query, limit=limit * 2)
+
+            for p in keyword_prompts:
+                dist = cosine_distance(query, p["prompt_text"][:500])
+                score = 0.7 * (1.0 - min(dist, 1.0)) + 0.3
+                scored.append((score, "prompt", p))
+
+        # Filter observations by type (but not prompts — they don't have types)
+        if obs_type and obs_type != "prompt":
+            scored = [(s, k, o) for s, k, o in scored
+                      if k == "prompt" or o.get("observation_type") == obs_type]
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        results = scored[:limit]
+
+        if not results:
+            return f"No results found matching '{query}'."
+
+        lines = [f"Found {len(results)} result(s) matching '{query}':\n"]
+        for score, kind, item in results:
+            if kind == "prompt":
+                preview = item["prompt_text"][:150]
+                if len(item["prompt_text"]) > 150:
+                    preview += "..."
+                lines.append(
+                    f"\U0001f4ac **User prompt** "
+                    f"(session: {item['session_id'][:12]}..., score: {score:.2f})"
+                )
+                lines.append(f"  \"{preview}\"")
+            else:
+                type_emoji = {
+                    "bugfix": "\U0001f534", "feature": "\U0001f7e3",
+                    "refactor": "\U0001f504", "change": "\u2705",
+                    "discovery": "\U0001f535", "decision": "\u2696\ufe0f",
+                    "session_summary": "\U0001f4cb",
+                }.get(item.get("observation_type", ""), "\u2022")
+
+                lines.append(
+                    f"#{item['id']} {type_emoji} **{item['title']}** "
+                    f"({item.get('observation_type', '?')}, score: {score:.2f})"
+                )
+                lines.append(f"  {item['summary']}")
+                if item.get("files") and item["files"] != "[]":
+                    lines.append(f"  Files: {item['files']}")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    def _tool_get_observations(self, args: dict) -> str:
+        """Get observations for a specific session or recent observations."""
+        session_id = args.get("session_id")
+        limit = args.get("limit", 50)
+
+        if session_id:
+            results = self.db.get_observations_by_session(session_id, limit=limit)
+            if not results:
+                return f"No observations found for session '{session_id}'."
+            header = f"Observations for session {session_id}:"
+        else:
+            results = self.db.get_recent_observations(limit=limit)
+            if not results:
+                return "No observations recorded yet."
+            header = f"Recent observations (last {limit}):"
+
+        lines = [header, ""]
+        for obs in results:
+            type_emoji = {
+                "bugfix": "\U0001f534", "feature": "\U0001f7e3",
+                "refactor": "\U0001f504", "change": "\u2705",
+                "discovery": "\U0001f535", "decision": "\u2696\ufe0f",
+                "session_summary": "\U0001f4cb",
+            }.get(obs.get("observation_type", ""), "\u2022")
+
+            lines.append(
+                f"#{obs['id']} {type_emoji} **{obs['title']}** ({obs.get('observation_type', '?')})"
+            )
+            lines.append(f"  {obs['summary']}")
+            if obs.get("files") and obs["files"] != "[]":
+                lines.append(f"  Files: {obs['files']}")
+            lines.append("")
+
+        return "\n".join(lines)
+
     def _tool_record_significant(self, args: dict) -> str:
         description = args.get("description", "")
         entity_name = args.get("entity", "")
@@ -239,6 +360,9 @@ class MemorableMCP:
             f"- KG relationships: {stats['kg_relationships']}",
             f"- Sacred facts (p10): {stats['sacred_facts']}",
             f"- Context seeds: {stats['context_seeds']}",
+            f"- Observations: {stats.get('observations', 0)}",
+            f"- Pending observations: {stats.get('pending_observations', 0)}",
+            f"- User prompts captured: {stats.get('user_prompts', 0)}",
             f"- Pending transcripts: {stats['pending_transcripts']}",
             f"\n### Config",
             f"- Processing: LLMLingua-2 (compression) + Apple Foundation Model (summaries)",
@@ -299,6 +423,48 @@ TOOLS = [
                 },
             },
             "required": ["query"],
+        },
+    },
+    {
+        "name": "memorable_search_observations",
+        "description": "Search observations and user prompts across sessions. Uses hybrid search: semantic similarity (Apple NLEmbedding) + keyword matching. Searches both tool-use observations and what the user said. Use for 'when did I say X', 'what happened with Y', or 'when did we decide Z'.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search term to find in observations and user prompts",
+                },
+                "type": {
+                    "type": "string",
+                    "description": "Filter by type. Use 'prompt' to search only user messages.",
+                    "enum": ["bugfix", "feature", "refactor", "change", "discovery", "decision", "session_summary", "prompt"],
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results to return (default 20)",
+                    "default": 20,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "memorable_get_observations",
+        "description": "Get observations for a specific session or recent observations. Each observation captures what happened during tool usage: type (bugfix/feature/refactor/change/discovery/decision), title, summary, and files involved.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "Session ID to get observations for. If omitted, returns recent observations across all sessions.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results to return (default 50)",
+                    "default": 50,
+                },
+            },
         },
     },
     {

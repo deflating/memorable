@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Memorable</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg-card: #161b22;
+    --bg-hover: #1c2128;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #f0c000;
+    --accent-dim: #f0c00033;
+    --blue: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --purple: #bc8cff;
+    --radius: 8px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+  }
+
+  header {
+    border-bottom: 1px solid var(--border);
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    position: sticky;
+    top: 0;
+    background: var(--bg);
+    z-index: 10;
+  }
+
+  header h1 {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--accent);
+  }
+
+  .stats-bar {
+    display: flex;
+    gap: 16px;
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+
+  .stats-bar span { white-space: nowrap; }
+  .stats-bar .num { color: var(--text); font-weight: 500; }
+
+  .search-box {
+    margin-left: auto;
+    position: relative;
+  }
+
+  .search-box input {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    padding: 6px 12px 6px 32px;
+    font-size: 13px;
+    width: 260px;
+    outline: none;
+  }
+
+  .search-box input:focus { border-color: var(--accent); }
+
+  .search-box::before {
+    content: "\1F50D";
+    position: absolute;
+    left: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 13px;
+  }
+
+  .tabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--border);
+    padding: 0 24px;
+  }
+
+  .tab {
+    padding: 10px 16px;
+    font-size: 13px;
+    color: var(--text-dim);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: all 0.15s;
+  }
+
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  main {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 20px 24px;
+  }
+
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    margin-bottom: 8px;
+    transition: background 0.1s;
+  }
+
+  .card:hover { background: var(--bg-hover); }
+
+  .card-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+
+  .badge {
+    font-size: 11px;
+    padding: 1px 7px;
+    border-radius: 10px;
+    font-weight: 500;
+  }
+
+  .badge-discovery { background: #58a6ff22; color: var(--blue); }
+  .badge-change { background: #3fb95022; color: var(--green); }
+  .badge-bugfix { background: #f8514922; color: var(--red); }
+  .badge-feature { background: #bc8cff22; color: var(--purple); }
+  .badge-refactor { background: #f0c00022; color: var(--accent); }
+  .badge-decision { background: #f0c00022; color: var(--accent); }
+  .badge-session_summary { background: #8b949e22; color: var(--text-dim); }
+  .badge-prompt { background: #58a6ff22; color: var(--blue); }
+
+  .card-title {
+    font-size: 14px;
+    font-weight: 500;
+    flex: 1;
+  }
+
+  .card-meta {
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .card-body {
+    font-size: 13px;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+
+  .card-files {
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--text-dim);
+    font-family: 'SF Mono', 'Menlo', monospace;
+  }
+
+  .session-card { cursor: pointer; }
+  .session-card .card-header { margin-bottom: 4px; }
+
+  .session-card .card-body {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .back-btn {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text-dim);
+    padding: 4px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    margin-bottom: 16px;
+    transition: all 0.15s;
+  }
+  .back-btn:hover { color: var(--text); border-color: var(--text-dim); }
+
+  .detail-header {
+    margin-bottom: 20px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .detail-header h2 { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+  .detail-header .detail-meta {
+    font-size: 13px;
+    color: var(--text-dim);
+    display: flex;
+    gap: 16px;
+    margin-bottom: 8px;
+  }
+  .detail-header .detail-summary {
+    font-size: 14px;
+    color: var(--text-dim);
+    line-height: 1.6;
+  }
+
+  .detail-section {
+    margin-bottom: 20px;
+  }
+  .detail-section h3 {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .prompt-text {
+    font-style: italic;
+    color: var(--text);
+    opacity: 0.85;
+  }
+
+  .empty {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--text-dim);
+    font-size: 14px;
+  }
+
+  .loading {
+    text-align: center;
+    padding: 40px;
+    color: var(--text-dim);
+  }
+
+  @media (max-width: 640px) {
+    header { flex-wrap: wrap; gap: 8px; padding: 12px 16px; }
+    .search-box { margin-left: 0; width: 100%; }
+    .search-box input { width: 100%; }
+    .stats-bar { flex-wrap: wrap; gap: 8px; }
+    main { padding: 12px 16px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Memorable</h1>
+  <div class="stats-bar" id="stats"></div>
+  <div class="search-box">
+    <input type="text" id="search" placeholder="Search observations & prompts..." />
+  </div>
+</header>
+
+<div class="tabs">
+  <div class="tab active" data-tab="observations">Observations</div>
+  <div class="tab" data-tab="prompts">Prompts</div>
+  <div class="tab" data-tab="sessions">Sessions</div>
+</div>
+
+<main id="content">
+  <div class="loading">Loading...</div>
+</main>
+
+<script>
+const API = '';  // same origin
+let currentTab = 'observations';
+let searchTimeout = null;
+
+// ── Fetch helpers ──
+
+async function api(path) {
+  const r = await fetch(API + path);
+  return r.json();
+}
+
+function formatTime(epoch) {
+  if (!epoch) return '';
+  const d = new Date(epoch * 1000);
+  const now = new Date();
+  const diff = (now - d) / 1000;
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+  if (diff < 604800) return Math.floor(diff / 86400) + 'd ago';
+  return d.toLocaleDateString('en-AU', { month: 'short', day: 'numeric' });
+}
+
+// ── Render ──
+
+function renderObservation(obs) {
+  const type = obs.observation_type || obs.type || 'change';
+  let files = '';
+  try {
+    const f = typeof obs.files === 'string' ? JSON.parse(obs.files) : (obs.files || []);
+    if (f.length) {
+      files = `<div class="card-files">${f.map(p => p.split('/').slice(-2).join('/')).join(', ')}</div>`;
+    }
+  } catch {}
+
+  return `<div class="card">
+    <div class="card-header">
+      <span class="badge badge-${type}">${type}</span>
+      <span class="card-title">${esc(obs.title)}</span>
+      <span class="card-meta">${formatTime(obs.created_at)}</span>
+    </div>
+    <div class="card-body">${esc(obs.summary)}</div>
+    ${files}
+  </div>`;
+}
+
+function renderPrompt(p) {
+  return `<div class="card">
+    <div class="card-header">
+      <span class="badge badge-prompt">prompt</span>
+      <span class="card-title">#${p.prompt_number || ''}</span>
+      <span class="card-meta">${formatTime(p.created_at)}</span>
+    </div>
+    <div class="card-body prompt-text">"${esc(p.prompt_text)}"</div>
+  </div>`;
+}
+
+function renderSession(s) {
+  const tid = s.transcript_id || '';
+  return `<div class="card session-card" onclick="loadSessionDetail('${esc(tid)}')">
+    <div class="card-header">
+      <span class="card-title">${esc(s.title)}</span>
+      <span class="card-meta">${s.date || ''}</span>
+    </div>
+    <div class="card-body">${esc(s.summary || s.header || '')}</div>
+    <div class="card-meta" style="margin-top:4px">${s.message_count || 0} messages, ${(s.word_count || 0).toLocaleString()} words</div>
+  </div>`;
+}
+
+async function loadSessionDetail(tid) {
+  if (!tid) return;
+  const content = document.getElementById('content');
+  content.innerHTML = '<div class="loading">Loading session...</div>';
+
+  // Hide tabs, show we're in detail view
+  document.querySelector('.tabs').style.display = 'none';
+
+  try {
+    const data = await api(`/api/session?id=${encodeURIComponent(tid)}`);
+    const s = data.session;
+    const obs = data.observations || [];
+    const prompts = data.prompts || [];
+
+    let html = `<button class="back-btn" onclick="goBack()">&larr; Back to sessions</button>`;
+    html += `<div class="detail-header">
+      <h2>${esc(s.title)}</h2>
+      <div class="detail-meta">
+        <span>${s.date || ''}</span>
+        <span>${s.message_count || 0} messages</span>
+        <span>${(s.word_count || 0).toLocaleString()} words</span>
+      </div>
+      <div class="detail-summary">${esc(s.summary || s.header || '')}</div>
+    </div>`;
+
+    if (obs.length) {
+      html += `<div class="detail-section"><h3>Observations (${obs.length})</h3>`;
+      html += obs.map(renderObservation).join('');
+      html += `</div>`;
+    }
+
+    if (prompts.length) {
+      html += `<div class="detail-section"><h3>Prompts (${prompts.length})</h3>`;
+      html += prompts.map(renderPrompt).join('');
+      html += `</div>`;
+    }
+
+    if (!obs.length && !prompts.length) {
+      html += `<div class="empty">No observations or prompts recorded for this session.</div>`;
+    }
+
+    content.innerHTML = html;
+  } catch (err) {
+    content.innerHTML = `<button class="back-btn" onclick="goBack()">&larr; Back</button>
+      <div class="empty">Error loading session: ${err.message}</div>`;
+  }
+}
+
+function goBack() {
+  document.querySelector('.tabs').style.display = 'flex';
+  loadTab('sessions');
+}
+
+function renderSearch(items) {
+  if (!items.length) return '<div class="empty">No results</div>';
+  return items.map(item => {
+    if (item.kind === 'prompt') {
+      return renderPrompt({ prompt_text: item.summary, created_at: item.created_at });
+    }
+    return renderObservation(item);
+  }).join('');
+}
+
+function esc(s) {
+  if (!s) return '';
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// ── Load data ──
+
+async function loadStats() {
+  const s = await api('/api/stats');
+  document.getElementById('stats').innerHTML = `
+    <span><span class="num">${s.sessions}</span> sessions</span>
+    <span><span class="num">${(s.total_words_processed || 0).toLocaleString()}</span> words</span>
+    <span><span class="num">${s.observations}</span> observations</span>
+    <span><span class="num">${s.user_prompts || 0}</span> prompts</span>
+  `;
+}
+
+async function loadTab(tab, query) {
+  const content = document.getElementById('content');
+  content.innerHTML = '<div class="loading">Loading...</div>';
+
+  try {
+    if (query) {
+      const data = await api(`/api/search?q=${encodeURIComponent(query)}&limit=50`);
+      content.innerHTML = renderSearch(data);
+      return;
+    }
+
+    if (tab === 'observations') {
+      const data = await api('/api/observations?limit=100');
+      if (!data.length) {
+        content.innerHTML = '<div class="empty">No observations yet. They\'ll appear as you use Claude Code.</div>';
+        return;
+      }
+      content.innerHTML = data.map(renderObservation).join('');
+    } else if (tab === 'prompts') {
+      const data = await api('/api/prompts?limit=100');
+      if (!data.length) {
+        content.innerHTML = '<div class="empty">No prompts captured yet.</div>';
+        return;
+      }
+      content.innerHTML = data.map(renderPrompt).join('');
+    } else if (tab === 'sessions') {
+      const data = await api('/api/sessions?limit=50');
+      if (!data.length) {
+        content.innerHTML = '<div class="empty">No sessions stored yet.</div>';
+        return;
+      }
+      content.innerHTML = data.map(renderSession).join('');
+    }
+  } catch (err) {
+    content.innerHTML = `<div class="empty">Error loading data: ${err.message}</div>`;
+  }
+}
+
+// ── Events ──
+
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelector('.tab.active').classList.remove('active');
+    tab.classList.add('active');
+    currentTab = tab.dataset.tab;
+    const q = document.getElementById('search').value.trim();
+    loadTab(currentTab, q);
+  });
+});
+
+document.getElementById('search').addEventListener('input', (e) => {
+  clearTimeout(searchTimeout);
+  searchTimeout = setTimeout(() => {
+    loadTab(currentTab, e.target.value.trim());
+  }, 300);
+});
+
+// ── Init ──
+loadStats();
+loadTab('observations');
+</script>
+</body>
+</html>

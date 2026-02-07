@@ -35,6 +35,11 @@ DEFAULTS = {
 
     # Context seeds
     "live_capture_interval": 20,  # messages between captures
+
+    # Observer (Apple-native observation pipeline)
+    "observer_enabled": True,
+    "observer_max_tool_output": 3000,
+    "observer_process_interval": 30,  # seconds between queue processing
 }
 
 
