@@ -1,15 +1,16 @@
 """Transcript processing pipeline for Memorable.
 
-Reads .jsonl transcripts, filters with heuristics, compresses
-with LLMLingua-2 at two tiers (0.50 storage, 0.20 skeleton),
-stores results in SQLite.
+Reads .jsonl transcripts, filters with heuristics, compresses with
+LLMLingua-2 at 0.50 for searchable archive, then uses Apple's
+on-device Foundation Model to generate session notes and emoji headers.
 
-No cloud APIs, no LLM calls. Fully local, deterministic compression.
+Fully local. No cloud APIs. No API keys.
 """
 
 import json
 import hashlib
 import re
+import subprocess
 import time
 from pathlib import Path
 from datetime import datetime
@@ -34,6 +35,25 @@ def _get_compressor():
     return _compressor
 
 
+def _call_apple_model(prompt: str, instructions: str = "") -> str:
+    """Call Apple's on-device Foundation Model via afm CLI."""
+    env = {**__import__("os").environ, "TOKENIZERS_PARALLELISM": "false"}
+    cmd = ["afm", "-s", prompt]
+    if instructions:
+        cmd.extend(["-i", instructions])
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=60, env=env
+        )
+        output = result.stdout.strip()
+        # Check for context window errors
+        if "Context window exceeded" in output or "Context window exceeded" in (result.stderr or ""):
+            return "[Apple model: context too long, skipped]"
+        return output
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        return f"[Apple model error: {e}]"
+
+
 class TranscriptProcessor:
     def __init__(self, config: Config):
         self.config = config
@@ -42,7 +62,6 @@ class TranscriptProcessor:
         self.min_human_words = config.get("min_human_words", 100)
         self.stale_minutes = config.get("stale_minutes", 15)
         self.rate_storage = config.get("compression_rate_storage", 0.50)
-        self.rate_skeleton = config.get("compression_rate_skeleton", 0.20)
 
     def process_all(self):
         """Scan transcript directories, queue new files, process pending."""
@@ -95,40 +114,62 @@ class TranscriptProcessor:
             self.db.mark_processed(queue_item["id"], error=f"Too few human words ({human_words})")
             return
 
-        # Check human ratio (skip autonomous sessions)
         total_words = sum(len(m["text"].split()) for m in messages)
+
+        # Skip autonomous wakeup sessions — they write their own journals
+        first_human = next((m["text"] for m in messages if m["role"] == "user"), "")
+        if "scheduled moment just for you" in first_human.lower():
+            self.db.mark_processed(queue_item["id"], error="Autonomous wakeup session")
+            return
         if total_words > 0 and (human_words / total_words) < 0.05:
-            self.db.mark_processed(queue_item["id"], error="Autonomous session")
+            self.db.mark_processed(queue_item["id"], error="Autonomous session (low human ratio)")
             return
 
         conversation_text = self._format_conversation(messages)
         session_date = self._get_session_date(path)
 
-        # Compress at two tiers
+        # Step 1: LLMLingua compression at 0.50
         compressor = _get_compressor()
-
         compressed_50 = compressor.compress_prompt(
             [conversation_text],
             rate=self.rate_storage,
             force_tokens=['\n', '**', ':', '.', '?', '!'],
         )["compressed_prompt"]
 
-        compressed_20 = compressor.compress_prompt(
-            [conversation_text],
-            rate=self.rate_skeleton,
-            force_tokens=['\n', '**', ':'],
-        )["compressed_prompt"]
+        # Step 2: Apple model generates emoji header from compressed text
+        header = self._generate_header(compressed_50, session_date)
 
-        # Generate a title from the first few human messages
+        # Step 3: Apple model generates session note from raw transcript
+        # Truncate raw to ~1800 words to fit in 4k token context window
+        # (prompt ~80 words + response ~200 words + content, at ~1.3 tokens/word)
+        raw_truncated = self._truncate_for_apple(conversation_text, max_words=1800)
+        summary = self._generate_summary(raw_truncated, session_date)
+
+        # If raw was still too long, retry with compressed text instead
+        if summary.startswith("[Apple model"):
+            summary = self._generate_summary(
+                self._truncate_for_apple(compressed_50, max_words=1800),
+                session_date,
+            )
+
+        # Extract title from human messages, fall back to header's first tag
         title = self._extract_title(messages)
+        if title == "Untitled session" and header:
+            # Pull first tag from header: "🔧 Built auth | ..." → "Built auth"
+            first_tag = header.split('|')[0].strip()
+            # Strip leading emoji
+            tag_text = re.sub(r'^[\U0001F000-\U0001FAFF\U00002702-\U000027B0\U0000FE00-\U0000FE0F\s]+', '', first_tag).strip()
+            if tag_text:
+                title = tag_text
 
         # Store in database
         session_id = self.db.store_session(
             transcript_id=path.stem,
             date=session_date.strftime("%Y-%m-%d"),
             title=title,
+            summary=summary,
+            header=header,
             compressed_50=compressed_50,
-            skeleton_20=compressed_20,
             source_path=str(path),
             message_count=len(messages),
             word_count=total_words,
@@ -136,8 +177,54 @@ class TranscriptProcessor:
         )
 
         self.db.mark_processed(queue_item["id"], session_id=session_id)
-        ratio_50 = len(compressed_50.split()) / max(total_words, 1)
-        print(f"    Stored: {title} ({total_words}w → {len(compressed_50.split())}w @ {ratio_50:.0%})")
+        print(f"    Stored: {title} ({total_words}w)")
+
+    # ── Apple Foundation Model ────────────────────────────────
+
+    def _generate_header(self, compressed_text: str, session_date: datetime) -> str:
+        """Generate an emoji-tagged scannable header from compressed text."""
+        # Use first ~800 words of compressed text (fits 4k context easily)
+        snippet = " ".join(compressed_text.split()[:800])
+        prompt = (
+            f"Session on {session_date.strftime('%Y-%m-%d')}. "
+            f"Create 3-5 short tags for this conversation. "
+            f"Each tag: one emoji + brief phrase. Separate with ' | '. "
+            f"Output ONLY a single line of tags, nothing else. No tables, no markdown, no newlines. "
+            f"Cover: main topic, tone, outcome. "
+            f"Example output: 🔧 Built auth system | 💛 Felt overwhelmed | ✅ Chose JWT\n\n"
+            f"{snippet}"
+        )
+        raw = _call_apple_model(prompt)
+        # Sanitize: keep only the first line, strip any markdown table artifacts
+        header = raw.split('\n')[0].strip()
+        header = re.sub(r'\|\s*---[^|]*', '', header)  # strip table separators
+        header = re.sub(r'\s*\|\s*$', '', header)  # trailing pipe
+        return header
+
+    def _generate_summary(self, conversation_text: str, session_date: datetime) -> str:
+        """Generate a casual session note from the raw transcript."""
+        prompt = (
+            f"Session between Matt and Claude on {session_date.strftime('%Y-%m-%d')}. "
+            f"Write a quick third-person note about what happened — like a logbook entry. "
+            f"Use 'Matt' and 'Claude', not 'you' or 'I'. "
+            f"No corporate speak, no bullet points, no greeting. "
+            f"Just: what they talked about, what mattered, what's unfinished. "
+            f"Start directly with the content. 150 words max.\n\n"
+            f"{conversation_text}"
+        )
+        return _call_apple_model(prompt)
+
+    def _truncate_for_apple(self, text: str, max_words: int = 1800) -> str:
+        """Truncate text to fit Apple model's 4k token context window."""
+        words = text.split()
+        if len(words) <= max_words:
+            return text
+        # Take first third and last two-thirds to capture start and recent context
+        head_words = max_words // 3
+        tail_words = max_words - head_words
+        head = " ".join(words[:head_words])
+        tail = " ".join(words[-tail_words:])
+        return head + "\n\n[...middle of conversation truncated...]\n\n" + tail
 
     # ── Transcript Extraction ─────────────────────────────────
 
@@ -201,21 +288,36 @@ class TranscriptProcessor:
 
     def _extract_title(self, messages: list[dict]) -> str:
         """Build a title from the first few substantive human messages."""
-        human_msgs = [m["text"] for m in messages if m["role"] == "user"][:5]
-        # Take the first human message that's more than a greeting
+        human_msgs = [m["text"] for m in messages if m["role"] == "user"][:8]
         for msg in human_msgs:
             text = msg.strip()
-            # Skip very short messages (greetings, "hey", "ok", etc.)
-            if len(text.split()) < 4:
+            # Strip XML/HTML-like tags and markdown bold
+            text = re.sub(r'<[^>]+>', '', text).strip()
+            text = re.sub(r'\*\*', '', text).strip()
+            # Skip tool output artifacts and MCP calls
+            if re.match(r'^(ToolSearch|Read|Write|Edit|Glob|Grep|Bash|mcp__)', text):
                 continue
-            # Truncate to first sentence or 60 chars
-            title = text.split('.')[0].split('?')[0].split('!')[0]
+            # Skip autonomous wakeup preamble / system injections
+            if "scheduled moment just for you" in text.lower():
+                continue
+            if text.startswith("Caveat:") or text.startswith("PROGRESS SUMMARY"):
+                continue
+            # Skip lines that are just timestamps or UUIDs
+            if re.match(r'^[\d\-T:\.Z]+$', text) or re.match(r'^[a-f0-9\-]{36}$', text):
+                continue
+            # Skip very short messages (greetings, "hey", "ok", etc.)
+            words = text.split()
+            if len(words) < 3:
+                continue
+            # Take first line only, then first sentence
+            first_line = text.split('\n')[0].strip()
+            title = first_line.split('.')[0].split('?')[0].split('!')[0].strip()
+            if len(title) < 3:
+                continue
             if len(title) > 60:
                 title = title[:57] + "..."
             return title
-        # Fallback: just use the first human message
-        if human_msgs:
-            return human_msgs[0][:60]
+        # Fallback: use date-based title
         return "Untitled session"
 
     def _get_session_date(self, jsonl_path: Path) -> datetime:

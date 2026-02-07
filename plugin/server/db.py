@@ -43,31 +43,31 @@ class MemorableDB:
     # ── Sessions ──────────────────────────────────────────────
 
     def store_session(self, transcript_id: str, date: str, title: str,
-                      compressed_50: str, skeleton_20: str,
+                      summary: str, header: str, compressed_50: str,
                       source_path: str = "", message_count: int = 0,
                       word_count: int = 0, human_word_count: int = 0) -> int:
         with self._conn() as conn:
             cur = conn.execute(
                 """INSERT INTO sessions
-                   (transcript_id, date, title, compressed_50, skeleton_20,
+                   (transcript_id, date, title, summary, header, compressed_50,
                     source_path, message_count, word_count, human_word_count)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (transcript_id, date, title, compressed_50, skeleton_20,
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (transcript_id, date, title, summary, header, compressed_50,
                  source_path, message_count, word_count, human_word_count)
             )
             return cur.lastrowid
 
     def search_sessions(self, query: str, limit: int = 10) -> list[dict]:
-        """Keyword search across compressed transcripts and titles."""
+        """Keyword search across summaries, compressed transcripts, and titles."""
         with self._conn() as conn:
             rows = conn.execute(
-                """SELECT id, transcript_id, date, title, compressed_50,
-                          message_count, word_count
+                """SELECT id, transcript_id, date, title, summary, header,
+                          compressed_50, message_count, word_count
                    FROM sessions
-                   WHERE compressed_50 LIKE ? OR title LIKE ?
+                   WHERE summary LIKE ? OR compressed_50 LIKE ? OR title LIKE ?
                    ORDER BY date DESC
                    LIMIT ?""",
-                (f"%{query}%", f"%{query}%", limit)
+                (f"%{query}%", f"%{query}%", f"%{query}%", limit)
             ).fetchall()
             return [dict(r) for r in rows]
 
@@ -75,8 +75,8 @@ class MemorableDB:
         with self._conn() as conn:
             cutoff = time.time() - (days * 86400)
             rows = conn.execute(
-                """SELECT id, transcript_id, date, title, compressed_50,
-                          skeleton_20, message_count, word_count
+                """SELECT id, transcript_id, date, title, summary, header,
+                          message_count, word_count
                    FROM sessions
                    WHERE created_at > ?
                    ORDER BY date DESC
@@ -85,23 +85,12 @@ class MemorableDB:
             ).fetchall()
             return [dict(r) for r in rows]
 
-    def get_recent_skeletons(self, limit: int = 20) -> list[dict]:
-        """Get recent session skeletons (0.20 compressed) for startup seed."""
+    def get_recent_summaries(self, limit: int = 10) -> list[dict]:
+        """Get recent session summaries for startup seed."""
         with self._conn() as conn:
             rows = conn.execute(
-                """SELECT id, date, title, skeleton_20, message_count, word_count
-                   FROM sessions
-                   ORDER BY date DESC
-                   LIMIT ?""",
-                (limit,)
-            ).fetchall()
-            return [dict(r) for r in rows]
-
-    def get_recent_compressed(self, limit: int = 3) -> list[dict]:
-        """Get recent sessions at 0.50 compression for startup texture."""
-        with self._conn() as conn:
-            rows = conn.execute(
-                """SELECT id, date, title, compressed_50, message_count, word_count
+                """SELECT id, date, title, summary, header,
+                          message_count, word_count
                    FROM sessions
                    ORDER BY date DESC
                    LIMIT ?""",
@@ -301,8 +290,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     transcript_id TEXT UNIQUE,
     date TEXT NOT NULL,
     title TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    header TEXT NOT NULL DEFAULT '',
     compressed_50 TEXT NOT NULL DEFAULT '',
-    skeleton_20 TEXT NOT NULL DEFAULT '',
     source_path TEXT DEFAULT '',
     message_count INTEGER DEFAULT 0,
     word_count INTEGER DEFAULT 0,

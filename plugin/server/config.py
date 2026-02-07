@@ -17,7 +17,6 @@ DEFAULTS = {
 
     # LLMLingua compression
     "compression_rate_storage": 0.50,
-    "compression_rate_skeleton": 0.20,
 
     # Watcher
     "watcher_enabled": True,
@@ -26,8 +25,7 @@ DEFAULTS = {
     "min_human_words": 100,
 
     # Startup seed
-    "seed_recent_compressed": 3,   # sessions at 0.50 in seed
-    "seed_skeleton_count": 20,     # sessions at 0.20 in seed
+    "seed_session_count": 10,      # session notes in startup seed
 
     # Context seeds
     "live_capture_interval": 20,  # messages between captures

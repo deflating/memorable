@@ -104,11 +104,10 @@ class MemorableMCP:
     # ── Tool Implementations ──────────────────────────────────
 
     def _tool_get_startup_seed(self, args: dict) -> str:
-        """Build startup context using recency gradient:
+        """Build startup context:
         - Sacred facts (always)
         - record_significant entries (always)
-        - Last 2-3 sessions at 0.50 compression (recent texture)
-        - Sessions 4-20 at 0.20 compression (topic skeletons)
+        - Recent session notes (Apple model summaries with emoji headers)
         """
         parts = []
 
@@ -129,31 +128,19 @@ class MemorableMCP:
                 for e in sig_entries:
                     parts.append(f"- **{e['name']}** (p:{e['priority']}): {e.get('description', '')}")
 
-        # Recency gradient: last N sessions at 0.50, older ones at 0.20
-        recent_count = self.config.get("seed_recent_compressed", 3)
-        skeleton_count = self.config.get("seed_skeleton_count", 20)
-
-        recent_full = self.db.get_recent_compressed(limit=recent_count)
-        if recent_full:
-            parts.append(f"\n## Recent Sessions (compressed)")
-            for s in recent_full:
-                parts.append(f"\n### {s['title']} ({s['date']}, {s['word_count']}w original)")
-                # Truncate to keep seed reasonable
-                text = s["compressed_50"]
-                if len(text) > 2000:
-                    text = text[:2000] + "\n[...truncated]"
-                parts.append(text)
-
-        # Older skeletons at 0.20
-        older_skeletons = self.db.get_recent_skeletons(limit=skeleton_count)
-        if older_skeletons:
-            # Skip the ones we already showed at 0.50
-            recent_ids = {s["id"] for s in recent_full} if recent_full else set()
-            skeletons = [s for s in older_skeletons if s["id"] not in recent_ids]
-            if skeletons:
-                parts.append(f"\n## Older Sessions (skeletons)")
-                for s in skeletons:
-                    parts.append(f"- [{s['date']}] **{s['title']}** ({s['word_count']}w): {s['skeleton_20'][:200]}")
+        # Recent session summaries
+        seed_count = self.config.get("seed_session_count", 10)
+        recent = self.db.get_recent_summaries(limit=seed_count)
+        if recent:
+            parts.append("\n## Recent Sessions")
+            for s in recent:
+                header = s.get("header", "")
+                summary = s.get("summary", "")
+                parts.append(f"\n### {s['title']} ({s['date']}, {s['word_count']}w)")
+                if header:
+                    parts.append(header)
+                if summary:
+                    parts.append(summary)
 
         if not parts:
             return "No memory data yet. This is a fresh Memorable installation."
@@ -174,11 +161,16 @@ class MemorableMCP:
         for s in results:
             lines.append(f"### {s['title']} ({s['date']})")
             lines.append(f"Messages: {s['message_count']} | Words: {s['word_count']}")
-            # Show first 800 chars of compressed transcript
-            preview = s["compressed_50"][:800]
-            if len(s["compressed_50"]) > 800:
-                preview += "..."
-            lines.append(preview)
+            if s.get("header"):
+                lines.append(s["header"])
+            if s.get("summary"):
+                lines.append(s["summary"])
+            else:
+                # Fall back to compressed transcript preview
+                preview = s["compressed_50"][:800]
+                if len(s["compressed_50"]) > 800:
+                    preview += "..."
+                lines.append(preview)
             lines.append("")
 
         return "\n".join(lines)
@@ -245,10 +237,9 @@ class MemorableMCP:
             f"- Context seeds: {stats['context_seeds']}",
             f"- Pending transcripts: {stats['pending_transcripts']}",
             f"\n### Config",
-            f"- Processing: LLMLingua-2 (local, CPU)",
+            f"- Processing: LLMLingua-2 (compression) + Apple Foundation Model (summaries)",
             f"- Storage compression: {config_info.get('compression_rate_storage')}",
-            f"- Skeleton compression: {config_info.get('compression_rate_skeleton')}",
-            f"- Seed: {config_info.get('seed_recent_compressed')} recent @ 0.50 + {config_info.get('seed_skeleton_count')} skeletons @ 0.20",
+            f"- Seed: last {config_info.get('seed_session_count', 10)} session notes",
             f"- Watcher enabled: {config_info.get('watcher_enabled')}",
         ]
 
