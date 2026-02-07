@@ -595,6 +595,35 @@ class MemorableDB:
             return row[0] if row else 0
         return self._query(do)
 
+    # ── Rolling Summaries ─────────────────────────────────────
+
+    def store_rolling_summary(self, content: str, summary_type: str = "5day",
+                              days_covered: int = 5,
+                              session_count: int = 0) -> int:
+        def do(conn):
+            cur = conn.execute(
+                """INSERT INTO rolling_summaries
+                   (summary_type, content, days_covered, session_count)
+                   VALUES (?, ?, ?, ?)""",
+                (summary_type, content, days_covered, session_count)
+            )
+            return cur.lastrowid
+        return self._execute(do)
+
+    def get_latest_rolling_summary(self,
+                                    summary_type: str = "5day") -> dict | None:
+        def do(conn):
+            cur = conn.execute(
+                """SELECT id, summary_type, content, days_covered,
+                          session_count, created_at
+                   FROM rolling_summaries
+                   WHERE summary_type = ?
+                   ORDER BY created_at DESC LIMIT 1""",
+                (summary_type,)
+            )
+            return _row_to_dict(cur)
+        return self._query(do)
+
     # ── Stats ─────────────────────────────────────────────────
 
     def get_stats(self) -> dict:

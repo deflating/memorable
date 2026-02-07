@@ -4,10 +4,12 @@
 Loads context from the memory database and injects it for Claude.
 Output to stdout becomes part of Claude's context before the first message.
 
-Three layers:
+Five layers:
 1. Sacred facts — immutable truths (priority 10 KG entities)
 2. Recent sessions — what's been happening the last few days (summaries + headers)
-3. Recent activity — last observations and user prompts for continuity
+3. Rolling summary — 5-day synthesis via Haiku (regenerated if >24h stale)
+4. Recent activity — last observations and user prompts for continuity
+5. User prompts — Matt's recent messages for conversational continuity
 """
 
 import json
@@ -20,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from server.db import MemorableDB
 from server.config import Config
+from server.summaries import get_or_generate_summary
 
 
 def _format_session(s: dict) -> str:
@@ -71,7 +74,20 @@ def main():
         for s in recent[:8]:
             parts.append(_format_session(s))
 
-    # ── Layer 3: Recent activity (last ~30 observations) ──
+    # ── Layer 3: Rolling summary (5-day synthesis) ────────
+    try:
+        rolling = get_or_generate_summary(config, db)
+        if rolling:
+            parts.append("")
+            parts.append("[Memorable] Rolling summary (last 5 days):")
+            # Truncate if very long — keep startup seed compact
+            if len(rolling) > 800:
+                rolling = rolling[:797] + "..."
+            parts.append(f"  {rolling}")
+    except Exception:
+        pass  # rolling summary is nice-to-have
+
+    # ── Layer 4: Recent activity (last ~30 observations) ──
     # Skip session_stop entries — they're just summaries of the above
     observations = db.get_recent_observations(limit=50)
     real_obs = [o for o in observations if o.get("observation_type") != "session_summary"][:20]
@@ -82,7 +98,7 @@ def main():
         for o in real_obs[:20]:
             parts.append(_format_observation(o))
 
-    # ── Layer 4: Last few user prompts (continuity check) ──
+    # ── Layer 5: Last few user prompts (continuity check) ──
     # These tell us what Matt was recently asking/thinking about
     try:
         prompts = db._query(lambda conn: [
