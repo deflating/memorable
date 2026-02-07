@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "memorable"
+version = "0.1.0"
+description = "Persistent memory for Claude Code sessions"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Matt Kennelly"}]
+dependencies = [
+    "requests>=2.28",
+    "watchdog>=3.0",
+]
+
+[project.optional-dependencies]
+embeddings = ["sqlite-vss>=0.1"]
+local = ["ollama>=0.1"]
+
+[project.scripts]
+memorable-server = "server.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["server*"]

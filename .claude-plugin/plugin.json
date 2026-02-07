@@ -1,0 +1,11 @@
+{
+  "name": "memorable",
+  "version": "0.1.0",
+  "description": "Persistent, intelligent memory across Claude Code sessions. Replaces scattered scripts with unified transcript processing, knowledge graph, and context seeding.",
+  "author": {
+    "name": "Matt Kennelly"
+  },
+  "repository": "https://github.com/mattkennelly/memorable",
+  "license": "MIT",
+  "keywords": ["memory", "knowledge-graph", "session-notes", "context", "persistence"]
+}

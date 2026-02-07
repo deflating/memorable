@@ -1,0 +1,10 @@
+{
+  "memorable": {
+    "command": "python3",
+    "args": ["-m", "server", "--watch"],
+    "cwd": "${CLAUDE_PLUGIN_ROOT}",
+    "env": {
+      "PYTHONPATH": "${CLAUDE_PLUGIN_ROOT}"
+    }
+  }
+}
