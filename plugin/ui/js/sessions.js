@@ -132,12 +132,61 @@ function wrapGoBack() {
   };
 }
 
+/** Render the related sessions panel (loaded async after main render) */
+function renderRelatedSessions(related) {
+  if (!related || !related.length) return '';
+
+  return `<div class="detail-section related-sessions-section">
+    <h3>Related Sessions</h3>
+    ${related.map((r, i) => {
+      const tid = r.transcript_id || '';
+      const similarity = r.similarity != null ? Math.round(r.similarity * 100) : null;
+      const shared = (r.shared_entities || []).slice(0, 4);
+      return `<div class="card session-card related-session-card" onclick="window._loadSessionDetail('${esc(tid)}')" style="animation-delay: ${i * 0.05}s">
+        <div class="card-header">
+          <span class="card-title">${esc(r.title || 'Untitled')}</span>
+          ${similarity != null ? `<span class="search-score">${similarity}%</span>` : ''}
+          <span class="card-meta">${r.date || ''}</span>
+        </div>
+        ${r.header ? `<div class="card-body" style="-webkit-line-clamp: 2;">${esc(r.header)}</div>` : ''}
+        ${shared.length ? `<div class="related-shared-entities">
+          ${shared.map(e => `<span class="related-entity-pill">${esc(e)}</span>`).join('')}
+        </div>` : ''}
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+/** Load related sessions asynchronously */
+async function loadRelatedSessions(transcriptId) {
+  const container = document.getElementById('related-sessions-container');
+  if (!container) return;
+
+  try {
+    const r = await fetch(`/api/session/related?id=${encodeURIComponent(transcriptId)}&limit=5`);
+    if (!r.ok) throw new Error('not available');
+    const data = await r.json();
+    const related = Array.isArray(data) ? data : (data.items || []);
+    if (related.length) {
+      container.innerHTML = renderRelatedSessions(related);
+    }
+  } catch {
+    // Silently fail - related sessions are optional
+  }
+}
+
 export function renderSessionDetail(session, observations, prompts) {
   const s = session;
 
   // Wrap goBack to clean up jump-to-top, then setup on next tick
   wrapGoBack();
   setTimeout(setupJumpToTop, 0);
+
+  // Load related sessions async after render
+  const tid = s.transcript_id || '';
+  if (tid) {
+    setTimeout(() => loadRelatedSessions(tid), 100);
+  }
 
   let html = `<button class="back-btn" onclick="window._goBack()">
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M10 3L5 8l5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -176,6 +225,9 @@ export function renderSessionDetail(session, observations, prompts) {
       <div style="color: #64748b; font-size: 13px; line-height: 1.6;">This session has no observations or prompts.<br>Activity is captured automatically during Claude Code use.</div>
     </div>`;
   }
+
+  // Placeholder for related sessions (loaded async)
+  html += `<div id="related-sessions-container"></div>`;
 
   return html;
 }

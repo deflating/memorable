@@ -4,11 +4,12 @@
  */
 
 import { esc } from './utils.js';
-import { renderSession } from './components.js';
+import { renderSession, renderTimelineItem } from './components.js';
 import { renderTimeline } from './timeline.js';
 import { renderSessionDetail } from './sessions.js';
 import { renderSearch } from './search.js';
 import { loadKG, stopKG } from './kg.js';
+import { renderAnalytics, setAnalyticsApi } from './analytics.js';
 
 // ── State ──
 
@@ -16,6 +17,8 @@ const API = '';
 let currentTab = 'timeline';
 let searchTimeout = null;
 let kbFocusIndex = -1;
+const PAGE_SIZE = { timeline: 100, sessions: 30 };
+let loadingMore = false;
 
 // ── Inject kb-focus style ──
 
@@ -47,7 +50,7 @@ function parseHash() {
     const params = new URLSearchParams(hash.slice(7));
     return { tab: currentTab, query: params.get('q') || '' };
   }
-  if (['timeline', 'sessions', 'kg'].includes(hash)) return { tab: hash };
+  if (['timeline', 'sessions', 'analytics', 'kg'].includes(hash)) return { tab: hash };
   return { tab: 'timeline' };
 }
 
@@ -100,6 +103,9 @@ async function loadTab(tab, query) {
   kbFocusIndex = -1;
   const content = document.getElementById('content');
 
+  // Widen main for analytics
+  content.classList.toggle('wide', tab === 'analytics');
+
   // Update hash
   if (query) {
     updateHash('search', '?q=' + encodeURIComponent(query));
@@ -108,36 +114,57 @@ async function loadTab(tab, query) {
   }
 
   // Show skeleton loading
-  if (tab !== 'kg') {
+  if (tab === 'kg' || tab === 'analytics') {
+    content.innerHTML = '<div class="loading"><span class="loading-dots">Loading</span></div>';
+  } else {
     content.innerHTML = Array(5).fill(0).map((_, i) =>
       `<div class="skeleton" style="animation-delay: ${i * 0.08}s"></div>`
     ).join('');
-  } else {
-    content.innerHTML = '<div class="loading"><span class="loading-dots">Loading graph</span></div>';
   }
 
   hideSearchingIndicator();
 
   try {
     if (query) {
-      const data = await api(`/api/search?q=${encodeURIComponent(query)}&limit=50`);
+      let data;
+      try {
+        data = await api(`/api/search/semantic?q=${encodeURIComponent(query)}&limit=20`);
+      } catch {
+        data = await api(`/api/search?q=${encodeURIComponent(query)}&limit=50`);
+      }
       content.innerHTML = renderSearch(data, query);
       return;
     }
 
     if (tab === 'timeline') {
-      const data = await api('/api/timeline?limit=200');
-      content.innerHTML = renderTimeline(data);
+      const limit = PAGE_SIZE.timeline;
+      const data = await api(`/api/timeline?limit=${limit}`);
+      const items = Array.isArray(data) ? data : (data.items || data);
+      const total = data.total || null;
+      content.innerHTML = renderTimeline(items);
+      // Add "Load More" if we got a full page
+      if (items.length >= limit) {
+        appendLoadMoreButton(content, 'timeline', items.length, total);
+      }
     } else if (tab === 'sessions') {
-      const data = await api('/api/sessions?limit=50');
-      if (!data.length) {
+      const limit = PAGE_SIZE.sessions;
+      const data = await api(`/api/sessions?limit=${limit}`);
+      const items = Array.isArray(data) ? data : (data.items || data);
+      const total = data.total || null;
+      if (!items.length) {
         content.innerHTML = `<div class="empty">
           <div class="empty-icon">~</div>
           No sessions stored yet.
         </div>`;
         return;
       }
-      content.innerHTML = data.map(renderSession).join('');
+      content.innerHTML = items.map(renderSession).join('');
+      if (items.length >= limit) {
+        appendLoadMoreButton(content, 'sessions', items.length, total);
+      }
+    } else if (tab === 'analytics') {
+      setAnalyticsApi(api);
+      await renderAnalytics(content);
     } else if (tab === 'kg') {
       await loadKG(content, api);
     }
@@ -147,6 +174,69 @@ async function loadTab(tab, query) {
       Error loading data: ${esc(err.message)}
     </div>`;
   }
+}
+
+// ── Load More (Pagination) ──
+
+function appendLoadMoreButton(container, tab, currentCount, total) {
+  const btn = document.createElement('button');
+  btn.className = 'load-more-btn';
+  btn.innerHTML = total
+    ? `Load more (${currentCount} of ${total})`
+    : 'Load more';
+  btn.addEventListener('click', () => loadMore(tab, currentCount, btn));
+  container.appendChild(btn);
+}
+
+async function loadMore(tab, offset, btn) {
+  if (loadingMore) return;
+  loadingMore = true;
+  btn.textContent = 'Loading...';
+  btn.disabled = true;
+
+  try {
+    const limit = PAGE_SIZE[tab] || 50;
+    let endpoint;
+    if (tab === 'timeline') {
+      endpoint = `/api/timeline?limit=${limit}&offset=${offset}`;
+    } else {
+      endpoint = `/api/sessions?limit=${limit}&offset=${offset}`;
+    }
+
+    const data = await api(endpoint);
+    const items = Array.isArray(data) ? data : (data.items || data);
+    const total = data.total || null;
+
+    // Remove the old button
+    btn.remove();
+
+    const content = document.getElementById('content');
+    if (tab === 'timeline') {
+      // Append into the timeline items wrapper
+      const wrapper = content.querySelector('.feat-timeline-items');
+      const target = wrapper || content;
+      items.forEach((item, i) => {
+        const div = document.createElement('div');
+        div.innerHTML = renderTimelineItem(item, offset + i);
+        while (div.firstChild) target.appendChild(div.firstChild);
+      });
+    } else {
+      items.forEach((s, i) => {
+        const div = document.createElement('div');
+        div.innerHTML = renderSession(s, offset + i);
+        while (div.firstChild) content.appendChild(div.firstChild);
+      });
+    }
+
+    // Add new Load More if we got a full page
+    if (items.length >= limit) {
+      appendLoadMoreButton(content, tab, offset + items.length, total);
+    }
+  } catch (err) {
+    btn.textContent = 'Error loading more. Click to retry.';
+    btn.disabled = false;
+  }
+  loadingMore = false;
 }
 
 // ── Session Detail ──

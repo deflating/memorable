@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .db import MemorableDB
 from .config import Config
-from .observer import embed_text, cosine_distance
+from .embeddings import embed_text, cosine_distance
 
 
 class MemorableMCP:

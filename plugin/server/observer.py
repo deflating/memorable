@@ -8,59 +8,13 @@ If quality is insufficient, swap _call_apple_model and embed_text
 implementations. The interface stays the same.
 """
 
-import array
 import json
 import subprocess
 from pathlib import Path
 
 from .db import MemorableDB
 from .config import Config
-
-# ── Apple NaturalLanguage Embeddings ──────────────────────────
-
-_nl_embedding = None
-
-
-def _get_embedding_model():
-    """Lazy-load Apple NLEmbedding sentence model."""
-    global _nl_embedding
-    if _nl_embedding is None:
-        import objc
-        ns = {}
-        objc.loadBundle(
-            'NaturalLanguage', ns,
-            '/System/Library/Frameworks/NaturalLanguage.framework',
-        )
-        NLEmbedding = ns['NLEmbedding']
-        _nl_embedding = NLEmbedding.sentenceEmbeddingForLanguage_('en')
-    return _nl_embedding
-
-
-def embed_text(text: str) -> bytes | None:
-    """Generate 512-dim sentence embedding, packed as float32 BLOB."""
-    try:
-        model = _get_embedding_model()
-        if model is None:
-            return None
-        vec = model.vectorForString_(text[:500])
-        if vec is None:
-            return None
-        return array.array('f', vec).tobytes()
-    except Exception:
-        return None
-
-
-def cosine_distance(text1: str, text2: str) -> float:
-    """Cosine distance between two texts. Lower = more similar."""
-    try:
-        model = _get_embedding_model()
-        if model is None:
-            return 2.0
-        return model.distanceBetweenString_andString_distanceType_(
-            text1[:500], text2[:500], 0
-        )
-    except Exception:
-        return 2.0
+from .embeddings import embed_text, cosine_distance  # noqa: F401 — re-exported
 
 
 # ── Apple Foundation Model ────────────────────────────────────

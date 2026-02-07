@@ -658,6 +658,344 @@ class MemorableDB:
             }
         return self._query(do)
 
+    # ── Analytics ─────────────────────────────────────────────
+
+    def get_daily_activity(self, days: int = 90) -> list[dict]:
+        """Get daily activity counts (sessions, observations, prompts, words)."""
+        def do(conn):
+            cutoff = time.time() - (days * 86400)
+            cur = conn.execute(
+                """SELECT date(date) as day,
+                          COUNT(*) as sessions,
+                          COALESCE(SUM(word_count), 0) as words
+                   FROM sessions
+                   WHERE created_at > ?
+                   GROUP BY date(date)
+                   ORDER BY day ASC""",
+                (cutoff,)
+            )
+            session_data = {r[0]: {"sessions": r[1], "words": r[2]}
+                           for r in cur.fetchall()}
+
+            cur = conn.execute(
+                """SELECT date(created_at, 'unixepoch') as day,
+                          COUNT(*) as cnt
+                   FROM observations
+                   WHERE created_at > ?
+                   GROUP BY day
+                   ORDER BY day ASC""",
+                (cutoff,)
+            )
+            obs_data = {r[0]: r[1] for r in cur.fetchall()}
+
+            cur = conn.execute(
+                """SELECT date(created_at, 'unixepoch') as day,
+                          COUNT(*) as cnt
+                   FROM user_prompts
+                   WHERE created_at > ?
+                   GROUP BY day
+                   ORDER BY day ASC""",
+                (cutoff,)
+            )
+            prompt_data = {r[0]: r[1] for r in cur.fetchall()}
+
+            all_days = sorted(set(list(session_data.keys()) +
+                                  list(obs_data.keys()) +
+                                  list(prompt_data.keys())))
+            result = []
+            for day in all_days:
+                sd = session_data.get(day, {})
+                result.append({
+                    "date": day,
+                    "sessions": sd.get("sessions", 0),
+                    "observations": obs_data.get(day, 0),
+                    "prompts": prompt_data.get(day, 0),
+                    "words": sd.get("words", 0),
+                })
+            return result
+        return self._query(do)
+
+    def get_hourly_distribution(self) -> list[dict]:
+        """Get observation counts grouped by hour of day."""
+        def do(conn):
+            cur = conn.execute(
+                """SELECT CAST(strftime('%H', created_at, 'unixepoch', 'localtime') AS INTEGER) as hour,
+                          COUNT(*) as count
+                   FROM observations
+                   GROUP BY hour
+                   ORDER BY hour ASC"""
+            )
+            rows = {r[0]: r[1] for r in cur.fetchall()}
+            return [{"hour": h, "count": rows.get(h, 0)} for h in range(24)]
+        return self._query(do)
+
+    def get_day_of_week_distribution(self) -> list[dict]:
+        """Get observation counts grouped by day of week."""
+        def do(conn):
+            # strftime %w: 0=Sunday, 1=Monday, ..., 6=Saturday
+            cur = conn.execute(
+                """SELECT CAST(strftime('%w', created_at, 'unixepoch', 'localtime') AS INTEGER) as dow,
+                          COUNT(*) as count
+                   FROM observations
+                   GROUP BY dow
+                   ORDER BY dow ASC"""
+            )
+            rows = {r[0]: r[1] for r in cur.fetchall()}
+            day_names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+            return [{"day": day_names[d], "count": rows.get(d, 0)} for d in range(7)]
+        return self._query(do)
+
+    def get_observation_type_counts(self) -> dict:
+        """Get counts grouped by observation_type."""
+        def do(conn):
+            cur = conn.execute(
+                """SELECT observation_type, COUNT(*) as count
+                   FROM observations
+                   GROUP BY observation_type
+                   ORDER BY count DESC"""
+            )
+            return {r[0]: r[1] for r in cur.fetchall()}
+        return self._query(do)
+
+    def get_entity_type_counts(self) -> dict:
+        """Get counts of KG entities grouped by type."""
+        def do(conn):
+            cur = conn.execute(
+                """SELECT type, COUNT(*) as count
+                   FROM kg_entities
+                   GROUP BY type
+                   ORDER BY count DESC"""
+            )
+            return {r[0]: r[1] for r in cur.fetchall()}
+        return self._query(do)
+
+    def get_top_entities(self, limit: int = 20) -> list[dict]:
+        """Get top entities by relationship count + priority."""
+        def do(conn):
+            cur = conn.execute(
+                """SELECT e.id, e.name, e.type, e.priority, e.description,
+                          (SELECT COUNT(*) FROM kg_relationships r
+                           WHERE r.source_id = e.id OR r.target_id = e.id) as rel_count
+                   FROM kg_entities e
+                   ORDER BY rel_count DESC, e.priority DESC
+                   LIMIT ?""",
+                (limit,)
+            )
+            return _rows_to_dicts(cur)
+        return self._query(do)
+
+    def get_recent_entities(self, limit: int = 20) -> list[dict]:
+        """Get most recently created/updated entities."""
+        def do(conn):
+            cur = conn.execute(
+                """SELECT id, name, type, priority, description, created_at
+                   FROM kg_entities
+                   ORDER BY created_at DESC
+                   LIMIT ?""",
+                (limit,)
+            )
+            return _rows_to_dicts(cur)
+        return self._query(do)
+
+    def get_analytics_totals(self) -> dict:
+        """Get aggregate totals for the analytics dashboard."""
+        def do(conn):
+            def count(sql):
+                return conn.execute(sql).fetchone()[0]
+
+            sessions = count("SELECT COUNT(*) FROM sessions")
+            observations = count("SELECT COUNT(*) FROM observations")
+            total_words = count("SELECT COALESCE(SUM(word_count), 0) FROM sessions")
+            entities = count("SELECT COUNT(*) FROM kg_entities")
+            avg_words = total_words // sessions if sessions > 0 else 0
+
+            # Calculate streak: consecutive days with sessions
+            cur = conn.execute(
+                """SELECT DISTINCT date(date) as day
+                   FROM sessions
+                   ORDER BY day DESC"""
+            )
+            days = [r[0] for r in cur.fetchall()]
+            streak = 0
+            if days:
+                from datetime import date, timedelta
+                today = date.today()
+                # Start from today or most recent day
+                check = today
+                if days[0] != str(today):
+                    # Allow yesterday to count
+                    yesterday = today - timedelta(days=1)
+                    if days[0] == str(yesterday):
+                        check = yesterday
+                    else:
+                        streak = 0
+                        days = []  # skip loop
+                for day_str in days:
+                    if day_str == str(check):
+                        streak += 1
+                        check -= timedelta(days=1)
+                    else:
+                        break
+
+            return {
+                "sessions": sessions,
+                "observations": observations,
+                "words": total_words,
+                "entities": entities,
+                "avg_session_words": avg_words,
+                "streak": streak,
+            }
+        return self._query(do)
+
+    # ── Paginated Queries ────────────────────────────────────
+
+    def get_timeline_paginated(self, limit: int = 100,
+                                offset: int = 0) -> tuple[list[dict], int]:
+        """Get timeline items with pagination. Returns (items, total_count)."""
+        def do(conn):
+            total = conn.execute(
+                """SELECT (SELECT COUNT(*) FROM observations) +
+                          (SELECT COUNT(*) FROM user_prompts)"""
+            ).fetchone()[0]
+
+            cur = conn.execute(
+                """SELECT 'observation' as kind, id, session_id,
+                          observation_type, title, summary, files,
+                          tool_name, NULL as prompt_number,
+                          NULL as prompt_text, created_at
+                   FROM observations
+                   UNION ALL
+                   SELECT 'prompt' as kind, id, session_id,
+                          NULL, NULL, NULL, NULL,
+                          NULL, prompt_number,
+                          prompt_text, created_at
+                   FROM user_prompts
+                   ORDER BY created_at DESC
+                   LIMIT ? OFFSET ?""",
+                (limit, offset)
+            )
+            return _rows_to_dicts(cur), total
+        return self._query(do)
+
+    def get_sessions_paginated(self, limit: int = 30,
+                                offset: int = 0) -> tuple[list[dict], int]:
+        """Get sessions with pagination. Returns (items, total_count)."""
+        def do(conn):
+            total = conn.execute(
+                "SELECT COUNT(*) FROM sessions"
+            ).fetchone()[0]
+
+            cur = conn.execute(
+                """SELECT id, transcript_id, date, title, summary, header,
+                          message_count, word_count, metadata
+                   FROM sessions
+                   ORDER BY date DESC
+                   LIMIT ? OFFSET ?""",
+                (limit, offset)
+            )
+            return _rows_to_dicts(cur), total
+        return self._query(do)
+
+    def get_observations_paginated(self, limit: int = 50, offset: int = 0,
+                                    session_id: str | None = None) -> tuple[list[dict], int]:
+        """Get observations with pagination. Returns (items, total_count)."""
+        def do(conn):
+            if session_id:
+                total = conn.execute(
+                    "SELECT COUNT(*) FROM observations WHERE session_id = ?",
+                    (session_id,)
+                ).fetchone()[0]
+                cur = conn.execute(
+                    """SELECT id, session_id, observation_type, title, summary,
+                              files, tool_name, created_at
+                       FROM observations
+                       WHERE session_id = ?
+                       ORDER BY created_at DESC
+                       LIMIT ? OFFSET ?""",
+                    (session_id, limit, offset)
+                )
+            else:
+                total = conn.execute(
+                    "SELECT COUNT(*) FROM observations"
+                ).fetchone()[0]
+                cur = conn.execute(
+                    """SELECT id, session_id, observation_type, title, summary,
+                              files, tool_name, created_at
+                       FROM observations
+                       ORDER BY created_at DESC
+                       LIMIT ? OFFSET ?""",
+                    (limit, offset)
+                )
+            return _rows_to_dicts(cur), total
+        return self._query(do)
+
+    # ── Semantic Search Support ──────────────────────────────
+
+    def get_all_observation_embeddings(self, limit: int = 5000) -> list[dict]:
+        """Get observations with their embeddings for semantic search."""
+        def do(conn):
+            cur = conn.execute(
+                """SELECT id, session_id, observation_type, title, summary,
+                          files, tool_name, created_at, embedding
+                   FROM observations
+                   WHERE embedding IS NOT NULL
+                   ORDER BY created_at DESC
+                   LIMIT ?""",
+                (limit,)
+            )
+            return _rows_to_dicts(cur)
+        return self._query(do)
+
+    def get_all_prompt_embeddings(self, limit: int = 5000) -> list[dict]:
+        """Get user prompts with their embeddings for semantic search."""
+        def do(conn):
+            cur = conn.execute(
+                """SELECT id, session_id, prompt_number, prompt_text,
+                          created_at, embedding
+                   FROM user_prompts
+                   WHERE embedding IS NOT NULL
+                   ORDER BY created_at DESC
+                   LIMIT ?""",
+                (limit,)
+            )
+            return _rows_to_dicts(cur)
+        return self._query(do)
+
+    def get_session_observation_embeddings(self, session_id: str) -> list[dict]:
+        """Get observations + embeddings for a specific session."""
+        def do(conn):
+            cur = conn.execute(
+                """SELECT id, observation_type, title, summary, embedding
+                   FROM observations
+                   WHERE session_id = ? AND embedding IS NOT NULL""",
+                (session_id,)
+            )
+            return _rows_to_dicts(cur)
+        return self._query(do)
+
+    def get_session_entity_names(self, session_id: str) -> list[str]:
+        """Get entity names associated with observations from a session.
+
+        Uses a heuristic: entities mentioned in observation summaries
+        that also exist in the KG.
+        """
+        def do(conn):
+            # Get all entity names
+            entities = conn.execute(
+                "SELECT name FROM kg_entities"
+            ).fetchall()
+            entity_names = [r[0] for r in entities]
+
+            # Get observation summaries for this session
+            cur = conn.execute(
+                "SELECT summary FROM observations WHERE session_id = ?",
+                (session_id,)
+            )
+            text = " ".join(r[0] for r in cur.fetchall()).lower()
+
+            return [name for name in entity_names if name.lower() in text]
+        return self._query(do)
+
 
 # ── Schema ────────────────────────────────────────────────────
 
