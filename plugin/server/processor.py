@@ -220,16 +220,35 @@ class TranscriptProcessor:
             if tag_text:
                 title = tag_text
 
+        # Step 4: Generate structured session notes from JSONL
+        session_note = ""
+        try:
+            from .notes import extract_session_data, compose_session_note
+            note_data = extract_session_data(path)
+            session_note = compose_session_note(
+                data=note_data,
+                summary_text=summary_text,
+                header=header,
+                date=session_date.strftime("%Y-%m-%d"),
+                title=title,
+                db=self.db,
+            )
+            print(f"    Notes: {len(session_note)} chars, "
+                  f"{len(note_data.get('files_touched', []))} files, "
+                  f"{len(note_data.get('errors', []))} errors")
+        except Exception as e:
+            print(f"    Notes generation error: {e}")
+
         # Store in database
-        # summary = Haiku summary (the actual readable content)
-        # compressed_50 = kept empty (legacy LLMLingua field)
+        # summary = Haiku summary (readable paragraph)
+        # compressed_50 = structured session note (exemplar format with YAML/moments/bullets)
         session_id = self.db.store_session(
             transcript_id=path.stem,
             date=session_date.strftime("%Y-%m-%d"),
             title=title,
             summary=summary_text,
             header=header,
-            compressed_50="",
+            compressed_50=session_note,
             metadata=metadata_json,
             source_path=str(path),
             message_count=len(messages),
@@ -240,7 +259,7 @@ class TranscriptProcessor:
         self.db.mark_processed(queue_item["id"], session_id=session_id)
         print(f"    Stored: {title} ({total_words}w)")
 
-        # Step 4: KG extraction from session summary
+        # Step 5: KG extraction from session summary
         try:
             from .kg import extract_from_session
             kg_result = extract_from_session(
