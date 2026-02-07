@@ -107,12 +107,87 @@ _TOOL_ACTION = {
     "NotebookEdit": "edit",
 }
 
+# Keywords in conversation context that indicate observation intent
+_TYPE_SIGNALS = {
+    "bugfix": {"fix", "bug", "broke", "broken", "crash", "error", "issue",
+               "wrong", "fail", "failing", "debug", "patch", "regression"},
+    "feature": {"add", "new", "implement", "create", "build", "feature",
+                "introduce", "support"},
+    "refactor": {"refactor", "clean", "rename", "move", "restructure",
+                 "simplify", "extract", "reorganize", "deduplicate"},
+    "decision": {"decide", "decision", "chose", "choose", "pick", "option",
+                 "approach", "strategy", "should we", "let's go with"},
+}
+
+# Lazy-loaded GLiNER for entity extraction from observations
+_gliner_model = None
+
+
+def _get_gliner():
+    global _gliner_model
+    if _gliner_model is None:
+        try:
+            from gliner import GLiNER
+            _gliner_model = GLiNER.from_pretrained("urchade/gliner_small-v2.1")
+        except ImportError:
+            pass
+    return _gliner_model
+
+
+def _classify_observation_type(action: str, context_before: str,
+                                context_after: str, tool_output: str) -> str:
+    """Infer a richer observation type from conversation context.
+
+    Uses keyword signals from the assistant message (context_before) and
+    user message (context_after) to distinguish bugfix/feature/refactor/decision
+    from generic change/discovery.
+    """
+    context = f"{context_before} {context_after}".lower()
+
+    # Check for specific intent signals, strongest match wins
+    best_type = None
+    best_count = 0
+    for obs_type, keywords in _TYPE_SIGNALS.items():
+        count = sum(1 for kw in keywords if kw in context)
+        if count > best_count:
+            best_count = count
+            best_type = obs_type
+
+    if best_type and best_count >= 2:
+        return best_type
+
+    # Fall back to action-based type
+    return _ACTION_TO_TYPE.get(action, "change")
+
+
+def _extract_entities_gliner(text: str) -> list[str]:
+    """Extract named entities from text using GLiNER. Returns entity names."""
+    model = _get_gliner()
+    if model is None:
+        return []
+    try:
+        labels = ["person", "technology", "software tool", "project"]
+        results = model.predict_entities(text[:500], labels, threshold=0.4)
+        skip = {"user", "claude", "assistant", "human", "option", "options"}
+        seen = set()
+        entities = []
+        for ent in results:
+            name = ent["text"].strip()
+            if name.lower() not in skip and len(name) > 1 and name.lower() not in seen:
+                seen.add(name.lower())
+                entities.append(name)
+        return entities[:5]
+    except Exception:
+        return []
+
 
 def generate_observation(tool_data: dict) -> dict | None:
     """Generate a structured observation from a queued tool event.
 
-    Uses mechanical descriptions derived from tool input/output rather
-    than LLM summarization. Fast, deterministic, and honest.
+    Combines mechanical descriptions from tool metadata with:
+    - Context-aware type classification (bugfix/feature/refactor/decision)
+    - GLiNER entity extraction for richer summaries
+    - Conversation context for the WHY, not just the WHAT
     """
     tool_name = tool_data.get("tool_name", "")
     if tool_name in SKIP_TOOLS:
@@ -120,6 +195,8 @@ def generate_observation(tool_data: dict) -> dict | None:
 
     tool_input_raw = tool_data.get("tool_input", "")
     tool_output_raw = tool_data.get("tool_response", "")
+    context_before = tool_data.get("context_before", "")
+    context_after = tool_data.get("context_after", "")
 
     # Skip trivial outputs
     if len(tool_output_raw.strip()) < 20:
@@ -130,11 +207,30 @@ def generate_observation(tool_data: dict) -> dict | None:
 
     title, summary = _describe_tool_call(tool_name, tool_input_raw, tool_output_raw, files)
 
+    # Classify with context awareness
+    obs_type = _classify_observation_type(action, context_before, context_after, tool_output_raw)
+
+    # Extract entities from tool output to enrich the summary
+    entity_text = tool_output_raw[:500] if tool_name in ("Grep", "Read", "WebSearch") else ""
+    if context_before:
+        entity_text = f"{context_before[:200]} {entity_text}"
+    entities = _extract_entities_gliner(entity_text) if entity_text else []
+
+    # Build enriched summary: mechanical description + context + entities
+    parts = [summary]
+    if context_after and len(context_after.strip()) > 10:
+        # Add a brief note about what the user was asking for
+        user_intent = context_after.strip().split('\n')[0][:120]
+        parts.append(f"Context: {user_intent}")
+    if entities:
+        parts.append(f"Entities: {', '.join(entities)}")
+    enriched_summary = " | ".join(parts)
+
     return {
-        "type": _ACTION_TO_TYPE.get(action, "change"),
+        "type": obs_type,
         "action": action,
         "title": title[:80],
-        "summary": summary[:300],
+        "summary": enriched_summary[:500],
         "files": files,
     }
 
@@ -354,9 +450,13 @@ def generate_session_summary(observations: list[dict],
 
     top_files = sorted(file_counts.keys(), key=lambda f: file_counts[f], reverse=True)[:3]
 
-    # Build action summary
+    # Build action summary — include richer types when present
     action_parts = []
-    for action, label in [("change", "edits"), ("discovery", "reads")]:
+    type_labels = [
+        ("bugfix", "bug fixes"), ("feature", "features"), ("refactor", "refactors"),
+        ("decision", "decisions"), ("change", "edits"), ("discovery", "reads"),
+    ]
+    for action, label in type_labels:
         count = action_counts.get(action, 0)
         if count:
             action_parts.append(f"{count} {label}")
