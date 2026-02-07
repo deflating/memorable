@@ -228,6 +228,63 @@
     opacity: 0.85;
   }
 
+  /* KG Graph */
+  #kg-container {
+    position: relative;
+    width: 100%;
+    height: calc(100vh - 160px);
+    min-height: 400px;
+  }
+  #kg-canvas {
+    width: 100%;
+    height: 100%;
+    cursor: grab;
+  }
+  #kg-canvas:active { cursor: grabbing; }
+  .kg-legend {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px 14px;
+    font-size: 12px;
+    line-height: 2;
+  }
+  .kg-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .kg-legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .kg-stats {
+    position: absolute;
+    bottom: 12px;
+    left: 12px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .kg-tooltip {
+    position: absolute;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 12px;
+    font-size: 13px;
+    pointer-events: none;
+    display: none;
+    max-width: 280px;
+    z-index: 20;
+  }
+  .kg-tooltip .tt-name { font-weight: 600; color: var(--text); }
+  .kg-tooltip .tt-type { color: var(--text-dim); font-size: 12px; }
+
   .empty {
     text-align: center;
     padding: 60px 20px;
@@ -263,6 +320,7 @@
 <div class="tabs">
   <div class="tab active" data-tab="timeline">Timeline</div>
   <div class="tab" data-tab="sessions">Sessions</div>
+  <div class="tab" data-tab="kg">Knowledge Graph</div>
 </div>
 
 <main id="content">
@@ -425,6 +483,8 @@ async function loadStats() {
 }
 
 async function loadTab(tab, query) {
+  // Stop KG simulation when leaving that tab
+  if (kgSim) { cancelAnimationFrame(kgSim); kgSim = null; }
   const content = document.getElementById('content');
   content.innerHTML = '<div class="loading">Loading...</div>';
 
@@ -449,10 +509,368 @@ async function loadTab(tab, query) {
         return;
       }
       content.innerHTML = data.map(renderSession).join('');
+    } else if (tab === 'kg') {
+      await loadKG(content);
     }
   } catch (err) {
     content.innerHTML = `<div class="empty">Error loading data: ${err.message}</div>`;
   }
+}
+
+// ── Knowledge Graph Visualization ──
+
+const KG_COLORS = {
+  person: '#f0c000',
+  project: '#3fb950',
+  technology: '#58a6ff',
+  organization: '#bc8cff',
+  file: '#8b949e',
+  concept: '#f85149',
+  tool: '#ff7b72',
+  service: '#d2a8ff',
+  language: '#79c0ff',
+};
+
+const KG_SIZES = {
+  person: 8,
+  project: 7,
+  technology: 6,
+  organization: 6,
+  file: 4,
+  concept: 5,
+  tool: 5,
+  service: 5,
+  language: 5,
+};
+
+let kgSim = null;  // active simulation handle
+
+async function loadKG(container) {
+  const data = await api('/api/kg');
+  if (!data.nodes || !data.nodes.length) {
+    container.innerHTML = '<div class="empty">Knowledge graph is empty. Entities will appear as the watcher processes observations.</div>';
+    return;
+  }
+
+  // Build unique node index
+  const nodeMap = {};
+  const nodes = [];
+  data.nodes.forEach(n => {
+    const key = n.name;
+    if (!nodeMap[key]) {
+      nodeMap[key] = {
+        id: key,
+        name: n.name,
+        type: n.type,
+        priority: n.priority,
+        x: 0, y: 0,
+        vx: 0, vy: 0,
+      };
+      nodes.push(nodeMap[key]);
+    }
+  });
+
+  const edges = data.edges.map(e => ({
+    source: nodeMap[e.source],
+    target: nodeMap[e.target],
+    type: e.rel_type,
+  })).filter(e => e.source && e.target);
+
+  // Count connections per node for sizing
+  const connections = {};
+  edges.forEach(e => {
+    connections[e.source.id] = (connections[e.source.id] || 0) + 1;
+    connections[e.target.id] = (connections[e.target.id] || 0) + 1;
+  });
+
+  // Legend of types present
+  const typesPresent = [...new Set(nodes.map(n => n.type))].sort();
+
+  container.innerHTML = `
+    <div id="kg-container">
+      <canvas id="kg-canvas"></canvas>
+      <div class="kg-legend">
+        ${typesPresent.map(t => `
+          <div class="kg-legend-item">
+            <span class="kg-legend-dot" style="background:${KG_COLORS[t] || '#8b949e'}"></span>
+            ${t}
+          </div>
+        `).join('')}
+      </div>
+      <div class="kg-stats">${nodes.length} entities, ${edges.length} relationships</div>
+      <div class="kg-tooltip" id="kg-tooltip"></div>
+    </div>`;
+
+  // Start force simulation
+  requestAnimationFrame(() => startGraph(nodes, edges, connections));
+}
+
+function startGraph(nodes, edges, connections) {
+  const canvas = document.getElementById('kg-canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const tooltip = document.getElementById('kg-tooltip');
+  const container = document.getElementById('kg-container');
+
+  // Hi-DPI
+  const dpr = window.devicePixelRatio || 1;
+  const rect = container.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  canvas.style.width = rect.width + 'px';
+  canvas.style.height = rect.height + 'px';
+  ctx.scale(dpr, dpr);
+  const W = rect.width;
+  const H = rect.height;
+
+  // Initialize positions in a circle
+  nodes.forEach((n, i) => {
+    const angle = (2 * Math.PI * i) / nodes.length;
+    const r = Math.min(W, H) * 0.3;
+    n.x = W / 2 + r * Math.cos(angle);
+    n.y = H / 2 + r * Math.sin(angle);
+  });
+
+  // Camera / pan / zoom
+  let camX = 0, camY = 0, zoom = 1;
+  let dragging = null, dragOffX = 0, dragOffY = 0;
+  let panning = false, panStartX = 0, panStartY = 0, panCamX = 0, panCamY = 0;
+  let hoveredNode = null;
+  let alpha = 1;  // simulation temperature
+
+  // Force simulation step
+  function tick() {
+    if (alpha < 0.001) return;
+
+    const repulsion = 800;
+    const attraction = 0.005;
+    const centerForce = 0.01;
+    const damping = 0.9;
+
+    // Repulsion between all nodes
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i], b = nodes[j];
+        let dx = b.x - a.x, dy = b.y - a.y;
+        let dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        const force = repulsion / (dist * dist);
+        const fx = (dx / dist) * force;
+        const fy = (dy / dist) * force;
+        a.vx -= fx; a.vy -= fy;
+        b.vx += fx; b.vy += fy;
+      }
+    }
+
+    // Attraction along edges
+    edges.forEach(e => {
+      const dx = e.target.x - e.source.x;
+      const dy = e.target.y - e.source.y;
+      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      const force = (dist - 120) * attraction;
+      const fx = (dx / dist) * force;
+      const fy = (dy / dist) * force;
+      e.source.vx += fx; e.source.vy += fy;
+      e.target.vx -= fx; e.target.vy -= fy;
+    });
+
+    // Center gravity
+    nodes.forEach(n => {
+      n.vx += (W / 2 - n.x) * centerForce;
+      n.vy += (H / 2 - n.y) * centerForce;
+    });
+
+    // Apply velocity
+    nodes.forEach(n => {
+      if (n === dragging) return;
+      n.vx *= damping;
+      n.vy *= damping;
+      n.x += n.vx * alpha;
+      n.y += n.vy * alpha;
+    });
+
+    alpha *= 0.995;
+  }
+
+  function getNodeRadius(n) {
+    const base = KG_SIZES[n.type] || 5;
+    const conn = connections[n.id] || 0;
+    return base + Math.min(conn * 1.5, 8);
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    ctx.save();
+    ctx.translate(camX, camY);
+    ctx.scale(zoom, zoom);
+
+    // Draw edges
+    ctx.lineWidth = 1;
+    edges.forEach(e => {
+      const isHighlighted = hoveredNode && (e.source === hoveredNode || e.target === hoveredNode);
+      ctx.strokeStyle = isHighlighted ? '#e6edf388' : '#30363d88';
+      ctx.lineWidth = isHighlighted ? 1.5 : 0.5;
+      ctx.beginPath();
+      ctx.moveTo(e.source.x, e.source.y);
+      ctx.lineTo(e.target.x, e.target.y);
+      ctx.stroke();
+
+      // Edge label
+      if (isHighlighted) {
+        const mx = (e.source.x + e.target.x) / 2;
+        const my = (e.source.y + e.target.y) / 2;
+        ctx.fillStyle = '#8b949e';
+        ctx.font = '10px -apple-system, system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(e.type, mx, my - 4);
+      }
+    });
+
+    // Draw nodes
+    nodes.forEach(n => {
+      const r = getNodeRadius(n);
+      const color = KG_COLORS[n.type] || '#8b949e';
+      const isHovered = n === hoveredNode;
+      const isConnected = hoveredNode && edges.some(e =>
+        (e.source === hoveredNode && e.target === n) ||
+        (e.target === hoveredNode && e.source === n)
+      );
+      const dimmed = hoveredNode && !isHovered && !isConnected;
+
+      ctx.globalAlpha = dimmed ? 0.15 : 1;
+
+      // Glow for hovered
+      if (isHovered) {
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, r + 6, 0, Math.PI * 2);
+        ctx.fillStyle = color + '33';
+        ctx.fill();
+      }
+
+      // Node circle
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+
+      // Label
+      ctx.fillStyle = dimmed ? '#8b949e' : '#e6edf3';
+      ctx.font = `${isHovered ? '13' : '11'}px -apple-system, system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText(n.name, n.x, n.y + r + 4);
+
+      ctx.globalAlpha = 1;
+    });
+
+    ctx.restore();
+  }
+
+  function animate() {
+    tick();
+    draw();
+    kgSim = requestAnimationFrame(animate);
+  }
+
+  // Mouse interaction
+  function screenToWorld(sx, sy) {
+    return [(sx - camX) / zoom, (sy - camY) / zoom];
+  }
+
+  function findNode(sx, sy) {
+    const [wx, wy] = screenToWorld(sx, sy);
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      const n = nodes[i];
+      const r = getNodeRadius(n) + 4;
+      if ((wx - n.x) ** 2 + (wy - n.y) ** 2 < r * r) return n;
+    }
+    return null;
+  }
+
+  canvas.addEventListener('mousedown', e => {
+    const r = canvas.getBoundingClientRect();
+    const sx = e.clientX - r.left, sy = e.clientY - r.top;
+    const node = findNode(sx, sy);
+    if (node) {
+      dragging = node;
+      dragOffX = node.x - (sx - camX) / zoom;
+      dragOffY = node.y - (sy - camY) / zoom;
+      alpha = Math.max(alpha, 0.3);
+    } else {
+      panning = true;
+      panStartX = e.clientX;
+      panStartY = e.clientY;
+      panCamX = camX;
+      panCamY = camY;
+    }
+  });
+
+  canvas.addEventListener('mousemove', e => {
+    const r = canvas.getBoundingClientRect();
+    const sx = e.clientX - r.left, sy = e.clientY - r.top;
+
+    if (dragging) {
+      dragging.x = (sx - camX) / zoom + dragOffX;
+      dragging.y = (sy - camY) / zoom + dragOffY;
+      dragging.vx = 0;
+      dragging.vy = 0;
+    } else if (panning) {
+      camX = panCamX + (e.clientX - panStartX);
+      camY = panCamY + (e.clientY - panStartY);
+    } else {
+      const node = findNode(sx, sy);
+      hoveredNode = node;
+      canvas.style.cursor = node ? 'pointer' : 'grab';
+
+      if (node && tooltip) {
+        const conn = connections[node.id] || 0;
+        tooltip.style.display = 'block';
+        tooltip.style.left = (e.clientX - r.left + 16) + 'px';
+        tooltip.style.top = (e.clientY - r.top - 10) + 'px';
+        tooltip.innerHTML = `<div class="tt-name">${esc(node.name)}</div>
+          <div class="tt-type">${node.type} · ${conn} connection${conn !== 1 ? 's' : ''} · priority ${node.priority}</div>`;
+      } else if (tooltip) {
+        tooltip.style.display = 'none';
+      }
+    }
+  });
+
+  canvas.addEventListener('mouseup', () => {
+    dragging = null;
+    panning = false;
+  });
+
+  canvas.addEventListener('mouseleave', () => {
+    dragging = null;
+    panning = false;
+    hoveredNode = null;
+    if (tooltip) tooltip.style.display = 'none';
+  });
+
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    const r = canvas.getBoundingClientRect();
+    const sx = e.clientX - r.left, sy = e.clientY - r.top;
+    const factor = e.deltaY > 0 ? 0.9 : 1.1;
+    const newZoom = Math.max(0.1, Math.min(5, zoom * factor));
+    // Zoom toward cursor
+    camX = sx - (sx - camX) * (newZoom / zoom);
+    camY = sy - (sy - camY) * (newZoom / zoom);
+    zoom = newZoom;
+  }, { passive: false });
+
+  // Resize handler
+  const ro = new ResizeObserver(() => {
+    const rect = container.getBoundingClientRect();
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    canvas.style.width = rect.width + 'px';
+    canvas.style.height = rect.height + 'px';
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.scale(dpr, dpr);
+  });
+  ro.observe(container);
+
+  animate();
 }
 
 // ── Events ──

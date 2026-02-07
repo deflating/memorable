@@ -39,6 +39,7 @@ class MemorableHandler(BaseHTTPRequestHandler):
             "/api/observations": self._api_observations,
             "/api/prompts": self._api_prompts,
             "/api/search": self._api_search,
+            "/api/kg": self._api_kg,
         }
 
         handler = routes.get(path)
@@ -153,6 +154,11 @@ class MemorableHandler(BaseHTTPRequestHandler):
         # Sort by created_at descending
         results.sort(key=lambda x: x.get("created_at") or 0, reverse=True)
         self._json_response(results[:limit])
+
+    def _api_kg(self, params):
+        min_priority = int(params.get("min_priority", [0])[0])
+        graph = db.get_kg_graph(min_priority=min_priority)
+        self._json_response(graph)
 
     def _json_response(self, data, status=200):
         body = json.dumps(data, default=str).encode()

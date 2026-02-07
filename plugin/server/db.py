@@ -276,6 +276,32 @@ class MemorableDB:
             return _rows_to_dicts(cur)
         return self._query(do)
 
+    def get_kg_graph(self, min_priority: int = 0) -> dict:
+        """Get full KG as nodes + edges for graph visualization."""
+        def do(conn):
+            entities = conn.execute(
+                """SELECT id, name, type, description, priority
+                   FROM kg_entities
+                   WHERE priority >= ?
+                   ORDER BY priority DESC""",
+                (min_priority,)
+            ).fetchall()
+            cols_e = ["id", "name", "type", "description", "priority"]
+            nodes = [dict(zip(cols_e, row)) for row in entities]
+
+            rels = conn.execute(
+                """SELECT r.id, s.name as source, s.type as source_type,
+                          r.rel_type, t.name as target, t.type as target_type
+                   FROM kg_relationships r
+                   JOIN kg_entities s ON r.source_id = s.id
+                   JOIN kg_entities t ON r.target_id = t.id"""
+            ).fetchall()
+            cols_r = ["id", "source", "source_type", "rel_type", "target", "target_type"]
+            edges = [dict(zip(cols_r, row)) for row in rels]
+
+            return {"nodes": nodes, "edges": edges}
+        return self._query(do)
+
     # ── Context Seeds ─────────────────────────────────────────
 
     def store_context_seed(self, session_id: str, seed_content: str,

@@ -73,6 +73,27 @@ _NOISE_ENTITIES = {
     "noise", "filter", "filtering", "extraction",
     "summary", "context", "hook", "hooks",
     "fresh start", "clean", "cleanup",
+    # More generic terms and fragments
+    "html", "css", "json", "yaml", "xml", "sql", "api", "ui",
+    "path", "config", "diff", "stat", "diff --stat",
+    "user", "command", "plugin", "session", "sessions",
+    "viewer", "canvas", "graph", "node", "edge", "tab", "nodes", "edges",
+    "endpoint", "route", "handler", "model", "view",
+    "commit", "branch", "push", "pull", "merge",
+    # CLI tools and common shell commands (not interesting as entities)
+    "curl", "head", "tail", "sleep", "lsof", "kill", "bash", "sh",
+    "python3", "python", "pip", "npm", "node", "git", "grep", "find",
+    "cat", "ls", "rm", "cp", "mv", "mkdir", "touch", "echo", "sed",
+    "awk", "sort", "xargs", "sqlite3", "jq", "json.tool",
+    # Network/infra fragments
+    "127.0.0.1", "localhost", "port", "7777", "8080", "8081", "3000",
+    "web server", "old web server", "web server process",
+    # Python stdlib / builtins
+    "sys", "os", "pathlib", "subprocess", "argparse",
+    "dict", "set", "tuple", "int", "str", "float", "bool", "none",
+    # Generic code fragments that leak
+    "expanded", "db_path", "conn", "row", "rows", "args",
+    "param", "params", "return", "self", "init", "main",
 }
 
 # ── NLGazetteer — Known Entity Lookup ───────────────────────
@@ -301,12 +322,21 @@ def afm_extract(text: str) -> dict:
         if name.lower() in _NOISE_ENTITIES or name.lower() in _NOISE_WORDS:
             continue
         # Skip absolute paths, home dirs, and usernames
-        if name.startswith("/") or name.startswith("~"):
+        if name.startswith("/") or name.startswith("~") or name.startswith("-"):
             continue
         if name.lower().startswith("mattkennelly"):
             continue
         # Skip phrases with too many words (likely descriptions, not entities)
         if len(name.split()) > 4:
+            continue
+        # Skip code fragments (brackets, quotes, dots suggesting dict/attr access)
+        if any(c in name for c in "[](){}\"'`$=;"):
+            continue
+        # Skip purely numeric or IP-like strings
+        if re.match(r'^[\d.:]+$', name):
+            continue
+        # Skip server.xxx module references
+        if re.match(r'^server\.\w+$', name):
             continue
         entities.append({"name": name, "type": etype})
 
