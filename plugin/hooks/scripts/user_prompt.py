@@ -32,19 +32,36 @@ def main():
     if not session_id or not prompt_text:
         return
 
+    import re
+
     # Skip very short prompts ("yes", "ok", "y", etc.)
     stripped = prompt_text.strip().lower()
     if len(stripped) < 5:
         return
 
     # Strip system-reminder blocks — they're noise
-    import re
     prompt_text = re.sub(
         r'<system-reminder>.*?</system-reminder>',
         '', prompt_text, flags=re.DOTALL
     ).strip()
 
     if not prompt_text or len(prompt_text) < 5:
+        return
+
+    # Skip context recovery prompts — these contain full conversation
+    # history (formatted as **User:** ... **Claude:** ... turn markers)
+    # and aren't actual user messages. Real prompts don't have these
+    # markers at the start of lines.
+    if re.search(r'^\*\*Claude:\*\*', prompt_text, re.MULTILINE):
+        return
+
+    # Skip observer/watcher session prompts — not Matt talking
+    lower = prompt_text.lower()
+    if any(lower.startswith(p) for p in [
+        "i'm ready to observe", "i'll observe", "i'll monitor",
+        "i need to observe", "i can see this is just",
+        "i appreciate the detailed instructions",
+    ]):
         return
 
     db = MemorableDB(
