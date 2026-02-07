@@ -88,14 +88,6 @@ SKIP_TOOLS = {
     "ToolSearch", "EnterPlanMode", "ExitPlanMode",
 }
 
-OBSERVATION_PROMPT = """\
-What did this tool call do? Answer in ONE short sentence, max 15 words. No preamble.
-
-Tool: {tool_name}
-Input: {tool_input}
-Output: {tool_output}\
-"""
-
 # Map our simple action types to the stored observation_type
 _ACTION_TO_TYPE = {
     "read": "discovery",
@@ -117,7 +109,11 @@ _TOOL_ACTION = {
 
 
 def generate_observation(tool_data: dict) -> dict | None:
-    """Generate a structured observation from a queued tool event."""
+    """Generate a structured observation from a queued tool event.
+
+    Uses mechanical descriptions derived from tool input/output rather
+    than LLM summarization. Fast, deterministic, and honest.
+    """
     tool_name = tool_data.get("tool_name", "")
     if tool_name in SKIP_TOOLS:
         return None
@@ -132,35 +128,13 @@ def generate_observation(tool_data: dict) -> dict | None:
     action = _TOOL_ACTION.get(tool_name, "run")
     files = _extract_files(tool_input_raw)
 
-    # Ask afm for just a one-sentence description
-    tool_input = _truncate(tool_input_raw, 600)
-    tool_output = _truncate(tool_output_raw, 800)
-
-    prompt = OBSERVATION_PROMPT.format(
-        tool_name=tool_name,
-        tool_input=tool_input,
-        tool_output=tool_output,
-    )
-
-    sentence = _call_afm(prompt).strip()
-
-    # Clean up: take just the first sentence, strip quotes/prefixes
-    if sentence:
-        sentence = sentence.split("\n")[0].strip().strip('"').strip("'")
-        # Remove common afm preamble
-        for prefix in ("It ", "The tool ", "This tool "):
-            if sentence.startswith(prefix) and len(sentence) > 30:
-                break
-
-    # Fallback if afm gives garbage or nothing
-    if not sentence or len(sentence) < 5 or len(sentence) > 200:
-        sentence = _mechanical_description(tool_name, files, tool_output_raw)
+    title, summary = _describe_tool_call(tool_name, tool_input_raw, tool_output_raw, files)
 
     return {
         "type": _ACTION_TO_TYPE.get(action, "change"),
         "action": action,
-        "title": sentence[:80],
-        "summary": sentence[:200],
+        "title": title[:80],
+        "summary": summary[:300],
         "files": files,
     }
 
@@ -178,56 +152,193 @@ def _extract_files(tool_input: str) -> list[str]:
     return files
 
 
-def _mechanical_description(tool_name: str, files: list[str], output: str) -> str:
-    """Fallback description when afm fails — purely mechanical."""
-    file_str = files[0].split("/")[-1] if files else ""
+def _describe_tool_call(tool_name: str, tool_input_raw: str, tool_output_raw: str, files: list[str]) -> tuple[str, str]:
+    """Build a concise, informative description from tool data.
+
+    Returns (title, summary) — no LLM needed.
+    """
+    data = {}
+    try:
+        data = json.loads(tool_input_raw) if isinstance(tool_input_raw, str) else (tool_input_raw or {})
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    def short_path(p):
+        """Last 2 path components: 'server/observer.py'"""
+        parts = p.rstrip("/").split("/")
+        return "/".join(parts[-2:]) if len(parts) >= 2 else parts[-1]
+
+    file_str = short_path(files[0]) if files else ""
+
     if tool_name == "Read":
-        return f"Read {file_str}" if file_str else "Read a file"
+        title = f"Read {file_str}" if file_str else "Read a file"
+        # Check if it was a partial read
+        offset = data.get("offset")
+        limit = data.get("limit")
+        if offset or limit:
+            parts = []
+            if offset: parts.append(f"from line {offset}")
+            if limit: parts.append(f"{limit} lines")
+            title += f" ({', '.join(parts)})"
+        return title, title
+
     elif tool_name == "Edit":
-        return f"Edited {file_str}" if file_str else "Edited a file"
+        old = data.get("old_string", "")
+        new = data.get("new_string", "")
+        replace_all = data.get("replace_all", False)
+        if file_str:
+            if replace_all and old:
+                title = f"Replaced all '{_snip(old, 30)}' in {file_str}"
+            elif old and new:
+                # Try to describe the nature of the edit
+                title = f"Edited {file_str}"
+                summary = f"Changed '{_snip(old, 60)}' to '{_snip(new, 60)}' in {file_str}"
+                return title, summary
+            else:
+                title = f"Edited {file_str}"
+        else:
+            title = "Edited a file"
+        return title, title
+
     elif tool_name == "Write":
-        return f"Wrote {file_str}" if file_str else "Wrote a file"
-    elif tool_name in ("Grep", "Glob"):
-        return f"Searched codebase"
+        title = f"Wrote {file_str}" if file_str else "Wrote a file"
+        content = data.get("content", "")
+        if content:
+            lines = content.count("\n") + 1
+            title += f" ({lines} lines)"
+        return title, title
+
+    elif tool_name == "Grep":
+        pattern = data.get("pattern", "")
+        path = data.get("path", "")
+        path_str = short_path(path) if path else "codebase"
+        matches = _count_matches(tool_output_raw)
+        title = f"Searched for '{_snip(pattern, 30)}'"
+        if matches is not None:
+            title += f" ({matches} match{'es' if matches != 1 else ''})"
+        summary = f"Searched {path_str} for '{_snip(pattern, 50)}'"
+        if matches is not None:
+            summary += f" — {matches} match{'es' if matches != 1 else ''}"
+        return title, summary
+
+    elif tool_name == "Glob":
+        pattern = data.get("pattern", "")
+        matches = _count_matches(tool_output_raw)
+        title = f"Found files matching '{_snip(pattern, 30)}'"
+        if matches is not None:
+            title += f" ({matches} file{'s' if matches != 1 else ''})"
+        return title, title
+
     elif tool_name == "Bash":
-        return f"Ran shell command"
-    return f"Used {tool_name}"
+        cmd = data.get("command", "")
+        desc = data.get("description", "")
+        if desc:
+            # Claude provides descriptions for commands — use them
+            title = desc
+            summary = f"$ {_snip(cmd, 80)}" if cmd else desc
+            return _snip(title, 80), summary
+        elif cmd:
+            # Extract the primary command
+            primary = _extract_primary_command(cmd)
+            title = f"Ran: {_snip(primary, 60)}"
+            return title, f"$ {_snip(cmd, 200)}"
+        return "Ran shell command", "Ran shell command"
+
+    elif tool_name == "WebFetch":
+        url = data.get("url", "")
+        prompt = data.get("prompt", "")
+        if url:
+            # Extract domain
+            try:
+                from urllib.parse import urlparse
+                domain = urlparse(url).netloc
+                title = f"Fetched {domain}"
+            except Exception:
+                title = f"Fetched a web page"
+            if prompt:
+                return title, f"{title}: {_snip(prompt, 100)}"
+            return title, title
+        return "Fetched a web page", "Fetched a web page"
+
+    elif tool_name == "WebSearch":
+        query = data.get("query", "")
+        title = f"Searched web for '{_snip(query, 40)}'" if query else "Searched the web"
+        return title, title
+
+    elif tool_name == "NotebookEdit":
+        title = f"Edited notebook {file_str}" if file_str else "Edited a notebook"
+        mode = data.get("edit_mode", "replace")
+        if mode == "insert":
+            title = f"Added cell to {file_str}" if file_str else "Added notebook cell"
+        elif mode == "delete":
+            title = f"Deleted cell from {file_str}" if file_str else "Deleted notebook cell"
+        return title, title
+
+    # Generic fallback
+    title = f"Used {tool_name}"
+    if file_str:
+        title += f" on {file_str}"
+    return title, title
+
+
+def _snip(text: str, max_len: int) -> str:
+    """Truncate text cleanly, adding ellipsis if needed."""
+    text = text.strip().split("\n")[0].strip()
+    if len(text) <= max_len:
+        return text
+    return text[:max_len - 1].rstrip() + "\u2026"
+
+
+def _count_matches(output: str) -> int | None:
+    """Try to count matches/results from tool output."""
+    lines = output.strip().split("\n")
+    lines = [l for l in lines if l.strip()]
+    if not lines:
+        return 0
+    # For grep/glob, each line is typically a match
+    return len(lines)
+
+
+def _extract_primary_command(cmd: str) -> str:
+    """Extract the meaningful part of a shell command."""
+    cmd = cmd.strip()
+    # Skip cd prefix
+    if cmd.startswith("cd ") and "&&" in cmd:
+        cmd = cmd.split("&&", 1)[1].strip()
+    # Take first command if piped/chained
+    for sep in (" | ", " && ", " ; "):
+        if sep in cmd:
+            cmd = cmd.split(sep)[0].strip()
+            break
+    return cmd
 
 
 def generate_session_summary(observations: list[dict],
                               session_id: str) -> dict | None:
-    """Generate a session-level summary from individual observations."""
+    """Generate a session-level summary from individual observations.
+
+    Built structurally from observation data — no LLM needed.
+    Produces a title like "Worked on viewer.html, kg.py (12 edits, 5 searches)"
+    """
     if not observations:
         return None
 
-    obs_lines = "\n".join(
-        f"- {o['title']}"
-        for o in observations[:20]
-    )
-
-    prompt = f"""\
-What was accomplished in this coding session? Answer in ONE sentence, max 25 words.
-
-Things that happened:
-{obs_lines}\
-"""
-
-    sentence = _call_afm(prompt).strip()
-    if not sentence or len(sentence) < 5:
-        return None
-
-    # Take first sentence, clean up
-    sentence = sentence.split("\n")[0].strip().strip('"').strip("'")[:200]
-
-    # Collect all files from observations
+    # Collect files and count actions
     all_files = []
+    action_counts = {}
+    titles = []
+
     for o in observations:
         try:
             files = json.loads(o.get("files", "[]")) if isinstance(o.get("files"), str) else o.get("files", [])
             all_files.extend(files)
         except (json.JSONDecodeError, TypeError):
             pass
-    # Deduplicate, keep order
+        obs_type = o.get("observation_type", o.get("type", "change"))
+        action_counts[obs_type] = action_counts.get(obs_type, 0) + 1
+        titles.append(o.get("title", ""))
+
+    # Deduplicate files, keep order
     seen = set()
     unique_files = []
     for f in all_files:
@@ -235,10 +346,47 @@ Things that happened:
             seen.add(f)
             unique_files.append(f)
 
+    # Build title from most-touched files
+    file_counts = {}
+    for f in all_files:
+        short = f.split("/")[-1]
+        file_counts[short] = file_counts.get(short, 0) + 1
+
+    top_files = sorted(file_counts.keys(), key=lambda f: file_counts[f], reverse=True)[:3]
+
+    # Build action summary
+    action_parts = []
+    for action, label in [("change", "edits"), ("discovery", "reads")]:
+        count = action_counts.get(action, 0)
+        if count:
+            action_parts.append(f"{count} {label}")
+
+    action_str = ", ".join(action_parts) if action_parts else f"{len(observations)} actions"
+
+    if top_files:
+        title = f"Worked on {', '.join(top_files)} ({action_str})"
+    else:
+        title = f"Session with {action_str}"
+
+    # Build a richer summary from unique observation titles
+    # Filter out boring/repetitive ones
+    seen_titles = set()
+    notable = []
+    for t in titles:
+        t_lower = t.lower().strip()
+        if t_lower not in seen_titles and len(t) > 10:
+            seen_titles.add(t_lower)
+            notable.append(t)
+
+    if notable:
+        summary = title + ". " + "; ".join(notable[:8])
+    else:
+        summary = title
+
     return {
         "type": "session_summary",
-        "title": sentence[:80],
-        "summary": sentence,
+        "title": title[:80],
+        "summary": summary[:500],
         "files": unique_files[:10],
     }
 
