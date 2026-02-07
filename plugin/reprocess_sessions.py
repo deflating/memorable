@@ -103,7 +103,22 @@ def main():
                 print(f"    Error: {e}")
                 db.mark_processed(item["id"], error=str(e))
     else:
-        processor.process_all()
+        # Loop until all transcripts are processed
+        processor._scan_for_new_transcripts()
+        total_pending = db.get_stats()["pending_transcripts"]
+        processed = 0
+        while True:
+            pending = db.get_pending_transcripts(limit=50)
+            if not pending:
+                break
+            for i, item in enumerate(pending, 1):
+                processed += 1
+                try:
+                    print(f"\n  [{processed}/{total_pending}] {Path(item['transcript_path']).name[:30]}...")
+                    processor._process_one(item)
+                except Exception as e:
+                    print(f"    Error: {e}")
+                    db.mark_processed(item["id"], error=str(e))
 
     elapsed = time.time() - start
     new_stats = db.get_stats()
