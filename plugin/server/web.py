@@ -20,7 +20,17 @@ db = MemorableDB(
     auth_token=config.get("sync_auth_token", ""),
 )
 
-VIEWER_HTML = Path(__file__).parent.parent / "ui" / "viewer.html"
+UI_DIR = Path(__file__).parent.parent / "ui"
+
+MIME_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".json": "application/json",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+}
 
 
 class MemorableHandler(BaseHTTPRequestHandler):
@@ -45,19 +55,38 @@ class MemorableHandler(BaseHTTPRequestHandler):
         handler = routes.get(path)
         if handler:
             handler(params)
+        elif self._serve_static(path):
+            pass  # served
         else:
             self._json_response({"error": "not found"}, 404)
 
     def _serve_viewer(self, params):
-        if not VIEWER_HTML.exists():
-            self.send_response(500)
+        self._serve_file(UI_DIR / "viewer.html")
+
+    def _serve_static(self, path):
+        """Serve static files from ui/ directory. Returns True if served."""
+        # Prevent path traversal
+        clean = path.lstrip("/")
+        if ".." in clean:
+            return False
+        filepath = UI_DIR / clean
+        if filepath.is_file() and UI_DIR in filepath.resolve().parents:
+            self._serve_file(filepath)
+            return True
+        return False
+
+    def _serve_file(self, filepath):
+        if not filepath.exists():
+            self.send_response(404)
             self.end_headers()
-            self.wfile.write(b"viewer.html not found")
+            self.wfile.write(b"Not found")
             return
+        content_type = MIME_TYPES.get(filepath.suffix, "application/octet-stream")
         self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-cache")
         self.end_headers()
-        self.wfile.write(VIEWER_HTML.read_bytes())
+        self.wfile.write(filepath.read_bytes())
 
     def _api_stats(self, params):
         stats = db.get_stats()
