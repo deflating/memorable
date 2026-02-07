@@ -112,15 +112,20 @@ class MemorableDB:
                       summary: str, header: str, compressed_50: str,
                       source_path: str = "", message_count: int = 0,
                       word_count: int = 0, human_word_count: int = 0,
-                      metadata: str = "{}") -> int:
+                      metadata: str = "{}",
+                      note_content: str = "",
+                      tags: str = "[]", mood: str = "",
+                      continuity: int = 5) -> int:
         def do(conn):
             cur = conn.execute(
                 """INSERT INTO sessions
                    (transcript_id, date, title, summary, header, compressed_50,
-                    metadata, source_path, message_count, word_count, human_word_count)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    metadata, source_path, message_count, word_count, human_word_count,
+                    note_content, tags, mood, continuity)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (transcript_id, date, title, summary, header, compressed_50,
-                 metadata, source_path, message_count, word_count, human_word_count)
+                 metadata, source_path, message_count, word_count, human_word_count,
+                 note_content, tags, mood, continuity)
             )
             return cur.lastrowid
         return self._execute(do)

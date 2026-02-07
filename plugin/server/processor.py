@@ -221,11 +221,11 @@ class TranscriptProcessor:
                 title = tag_text
 
         # Step 4: Generate structured session notes from JSONL
-        session_note = ""
+        note_result = {}
         try:
             from .notes import extract_session_data, compose_session_note
             note_data = extract_session_data(path)
-            session_note = compose_session_note(
+            note_result = compose_session_note(
                 data=note_data,
                 summary_text=summary_text,
                 header=header,
@@ -233,27 +233,29 @@ class TranscriptProcessor:
                 title=title,
                 db=self.db,
             )
-            print(f"    Notes: {len(session_note)} chars, "
+            print(f"    Notes: {len(note_result.get('note_content', ''))} chars, "
                   f"{len(note_data.get('files_touched', []))} files, "
                   f"{len(note_data.get('errors', []))} errors")
         except Exception as e:
             print(f"    Notes generation error: {e}")
 
         # Store in database
-        # summary = Haiku summary (readable paragraph)
-        # compressed_50 = structured session note (exemplar format with YAML/moments/bullets)
         session_id = self.db.store_session(
             transcript_id=path.stem,
             date=session_date.strftime("%Y-%m-%d"),
             title=title,
             summary=summary_text,
             header=header,
-            compressed_50=session_note,
+            compressed_50=note_result.get("note_content", ""),
             metadata=metadata_json,
             source_path=str(path),
             message_count=len(messages),
             word_count=total_words,
             human_word_count=human_words,
+            note_content=note_result.get("note_content", ""),
+            tags=note_result.get("tags", "[]"),
+            mood=note_result.get("mood", ""),
+            continuity=note_result.get("continuity", 5),
         )
 
         self.db.mark_processed(queue_item["id"], session_id=session_id)

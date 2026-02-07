@@ -495,7 +495,7 @@ def compose_session_note(
     date: str,
     title: str,
     db: MemorableDB | None = None,
-) -> str:
+) -> dict:
     """Compose a full session note in the exemplar format.
 
     Args:
@@ -507,7 +507,8 @@ def compose_session_note(
         db: Database for continuity scoring
 
     Returns:
-        Formatted markdown session note string
+        Dict with 'note_content' (formatted markdown), 'mood', 'tags' (JSON),
+        'continuity' (int), and 'key_moments' (list).
     """
     key_moments = select_key_moments(data)
 
@@ -524,7 +525,7 @@ def compose_session_note(
     notes = _generate_future_notes(data, summary_text)
 
     # Format the complete note
-    return _format_note(
+    note_content = _format_note(
         date=date,
         tags=tags,
         mood=mood,
@@ -533,6 +534,14 @@ def compose_session_note(
         key_moments=key_moments,
         notes=notes,
     )
+
+    return {
+        "note_content": note_content,
+        "mood": mood,
+        "tags": json.dumps(tags),
+        "continuity": continuity,
+        "key_moments": key_moments,
+    }
 
 
 def _generate_mood(data: dict, header: str) -> str:
