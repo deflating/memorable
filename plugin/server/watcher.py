@@ -1,7 +1,10 @@
 """File watcher for new session transcripts.
 
 Uses watchdog to monitor transcript directories for new/changed .jsonl files.
-When a file hasn't been modified for stale_minutes, queues it for processing.
+When a file hasn't been modified for stale_minutes, processes it into a
+session JSON file.
+
+Also rebuilds the local index when new session files appear.
 """
 
 import time
@@ -13,7 +16,7 @@ from watchdog.events import FileSystemEventHandler
 
 from .config import Config
 from .processor import TranscriptProcessor
-from .observer import ObservationProcessor
+from .db import MemorableDB, DEFAULT_INDEX_PATH
 
 
 class TranscriptHandler(FileSystemEventHandler):
@@ -22,7 +25,7 @@ class TranscriptHandler(FileSystemEventHandler):
     def __init__(self, processor: TranscriptProcessor, stale_minutes: int = 15):
         self.processor = processor
         self.stale_minutes = stale_minutes
-        self._pending = {}  # path -> last_modified_time
+        self._pending = {}
         self._lock = threading.Lock()
 
     def on_created(self, event):
@@ -48,7 +51,6 @@ class TranscriptHandler(FileSystemEventHandler):
                     del self._pending[path]
 
         if ready:
-            # Trigger a full scan+process cycle
             self.processor.process_all()
 
 
@@ -58,7 +60,7 @@ class TranscriptWatcher:
     def __init__(self, config: Config):
         self.config = config
         self.processor = TranscriptProcessor(config)
-        self.obs_processor = ObservationProcessor(config)
+        self.db = MemorableDB(DEFAULT_INDEX_PATH)
         self.handler = TranscriptHandler(
             self.processor,
             stale_minutes=config.get("stale_minutes", 15),
@@ -67,7 +69,6 @@ class TranscriptWatcher:
 
     def start(self):
         """Start watching. Blocks until stopped."""
-        # Watch all transcript directories
         for transcript_dir in self.config["transcript_dirs"]:
             path = Path(transcript_dir)
             if path.exists():
@@ -75,27 +76,17 @@ class TranscriptWatcher:
 
         self.observer.start()
 
-        # Also do an initial scan
+        # Initial scan
         self.processor.process_all()
-
-        # Periodic check for stale files + observation queue processing
-        obs_interval = self.config.get("observer_process_interval", 30)
-        obs_enabled = self.config.get("observer_enabled", True)
-        last_obs_check = 0
+        # Build index from files
+        self.db.rebuild_from_files()
 
         try:
             while True:
-                time.sleep(10)
+                time.sleep(30)
                 self.handler.check_stale()
-
-                # Process observation queue on a separate interval
-                now = time.time()
-                if obs_enabled and (now - last_obs_check) >= obs_interval:
-                    last_obs_check = now
-                    try:
-                        self.obs_processor.process_queue()
-                    except Exception as e:
-                        print(f"Observation processing error: {e}")
+                # Rebuild index if new files appeared
+                self.db.rebuild_if_needed()
         except KeyboardInterrupt:
             self.observer.stop()
         self.observer.join()

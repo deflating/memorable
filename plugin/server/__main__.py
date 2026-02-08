@@ -5,7 +5,7 @@ Usage:
     python -m server --watch      # Run with transcript watcher
     python -m server --watcher    # Run watcher only (no MCP server, for launchd)
     python -m server --process    # Process pending transcripts and exit
-    python -m server --init       # Initialize config and database
+    python -m server --rebuild    # Rebuild index from files and exit
 """
 
 import argparse
@@ -16,7 +16,7 @@ from pathlib import Path
 
 from .config import Config
 from .mcp_server import MemorableMCP
-from .db import MemorableDB
+from .db import MemorableDB, DEFAULT_INDEX_PATH
 
 
 def _setup_logging():
@@ -28,7 +28,6 @@ def _setup_logging():
     logger = logging.getLogger("server")
     logger.setLevel(logging.INFO)
 
-    # File handler with rotation (10MB max, 3 backups)
     file_handler = logging.handlers.RotatingFileHandler(
         log_file, maxBytes=10*1024*1024, backupCount=3
     )
@@ -38,7 +37,6 @@ def _setup_logging():
     )
     file_handler.setFormatter(file_formatter)
 
-    # Stderr handler for immediate feedback
     console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setLevel(logging.WARNING)
     console_formatter = logging.Formatter("%(levelname)s: %(message)s")
@@ -61,8 +59,8 @@ def main():
                         help="Run watcher only in foreground (for launchd)")
     parser.add_argument("--process", action="store_true",
                         help="Process pending transcripts and exit")
-    parser.add_argument("--init", action="store_true",
-                        help="Initialize config and database")
+    parser.add_argument("--rebuild", action="store_true",
+                        help="Rebuild local index from files and exit")
     parser.add_argument("--config", type=str, default=None,
                         help="Path to config file")
     args = parser.parse_args()
@@ -70,8 +68,12 @@ def main():
     config = Config(Path(args.config)) if args.config else Config()
     logger.info(f"Starting Memorable with config from {config.config_path}")
 
-    if args.init:
-        _init(config)
+    if args.rebuild:
+        db = MemorableDB(DEFAULT_INDEX_PATH)
+        db.rebuild_from_files()
+        stats = db.get_stats()
+        print(f"Index rebuilt: {stats['sessions']} sessions, "
+              f"{stats['observations']} observations, {stats['prompts']} prompts")
         return
 
     if args.process:
@@ -91,26 +93,14 @@ def main():
     server.run()
 
 
-def _init(config: Config):
-    """Initialize Memorable: create config, database, and default data."""
-    print("Initializing Memorable...")
-
-    # Create config with defaults
-    config.save()
-    print(f"  Config: {config.config_path}")
-
-    # Create database
-    db = MemorableDB(Path(config["db_path"]))
-    print(f"  Database: {config['db_path']}")
-
-    print("Done. Edit ~/.memorable/config.json to configure.")
-
-
 def _process(config: Config):
     """Process pending transcripts once and exit."""
     from .processor import TranscriptProcessor
     processor = TranscriptProcessor(config)
     processor.process_all()
+    # Rebuild index after processing
+    db = MemorableDB(DEFAULT_INDEX_PATH)
+    db.rebuild_from_files()
 
 
 def _run_watcher(config: Config):
@@ -118,7 +108,7 @@ def _run_watcher(config: Config):
     from .watcher import TranscriptWatcher
     print("Memorable watcher starting...", file=sys.stderr)
     watcher = TranscriptWatcher(config)
-    watcher.start()  # blocks
+    watcher.start()
 
 
 def _start_watcher(config: Config):

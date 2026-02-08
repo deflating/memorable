@@ -2,13 +2,9 @@
 
 Reads .jsonl transcripts, filters with heuristics, summarizes with
 Haiku via `claude -p` (uses existing Claude Code subscription),
-then extracts structured metadata using lightweight NLP tools:
+then writes a JSON session file to ~/.memorable/data/sessions/.
 
-- GLiNER: zero-shot named entity recognition (~200MB on disk)
-- Apple Foundation Model: emoji tag headers only
-
-The Haiku summary is the primary memory; metadata provides the
-searchable index.
+Files are the source of truth. No database writes here.
 """
 
 import json
@@ -20,23 +16,16 @@ import time
 from pathlib import Path
 from datetime import datetime
 
-from .db import MemorableDB
 from .config import Config
 
 logger = logging.getLogger(__name__)
 
-
-# Lazy-loaded extractors
-_gliner_model = None
+DATA_DIR = Path.home() / ".memorable" / "data"
+SESSIONS_DIR = DATA_DIR / "sessions"
 
 
 def _summarize_with_haiku(fact_sheet: str, model: str = "haiku") -> str:
-    """Generate a narrative session summary from a structured fact sheet.
-
-    Instead of sending raw conversation text, we send a pre-built fact sheet
-    containing: opening request, actions taken, errors, user quotes, and ending.
-    This produces specific, narrative summaries instead of generic paragraphs.
-    """
+    """Generate a narrative session summary from a structured fact sheet."""
     system_prompt = (
         "You are a session note writer. You receive a FACT SHEET and output "
         "EXACTLY ONE PARAGRAPH of narrative prose. Nothing else.\n\n"
@@ -82,11 +71,7 @@ def _summarize_with_haiku(fact_sheet: str, model: str = "haiku") -> str:
                 ])
             ):
                 lines.pop(0)
-            # If Haiku went off-script (multiple paragraphs with questions/bullets),
-            # try to extract just the narrative paragraph
             text = '\n'.join(lines).strip()
-            # If multiple paragraphs remain and one starts with "Matt",
-            # use that — it's likely the actual summary
             if '\n\n' in text:
                 paragraphs = text.split('\n\n')
                 matt_paras = [p for p in paragraphs
@@ -95,8 +80,6 @@ def _summarize_with_haiku(fact_sheet: str, model: str = "haiku") -> str:
                     text = matt_paras[0].strip()
             if not text:
                 text = result.stdout.strip()
-            # If output has bullet points or numbered lists, it went off-script.
-            # Find the longest non-bullet paragraph and use that.
             if '\n1.' in text or '\n- ' in text or '\n**' in text:
                 paragraphs = text.split('\n\n')
                 narrative = [p for p in paragraphs
@@ -113,65 +96,49 @@ def _summarize_with_haiku(fact_sheet: str, model: str = "haiku") -> str:
         return "[Haiku summary failed: claude CLI not found]"
 
 
-def _get_gliner():
-    global _gliner_model
-    if _gliner_model is None:
-        try:
-            from gliner import GLiNER
-            _gliner_model = GLiNER.from_pretrained("urchade/gliner_small-v2.1")
-        except Exception as e:
-            print(f"    GLiNER model unavailable (first run requires internet): {e}")
-            return None
-    return _gliner_model
-
-
-def _call_apple_model(prompt: str, instructions: str = "") -> str:
-    """Call Apple's on-device Foundation Model via afm CLI."""
-    env = {**__import__("os").environ, "TOKENIZERS_PARALLELISM": "false"}
-    cmd = ["afm", "-s", prompt]
-    if instructions:
-        cmd.extend(["-i", instructions])
-    try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=60, env=env
-        )
-        output = result.stdout.strip()
-        # Check for context window errors
-        if "Context window exceeded" in output or "Context window exceeded" in (result.stderr or ""):
-            return "[Apple model: context too long, skipped]"
-        return output
-    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        return f"[Apple model error: {e}]"
+def _slugify(text: str, max_len: int = 60) -> str:
+    """Convert text to a URL/filename-safe slug."""
+    text = text.lower().strip()
+    text = re.sub(r'[^\w\s-]', '', text)
+    text = re.sub(r'[\s_]+', '-', text)
+    text = re.sub(r'-+', '-', text).strip('-')
+    return text[:max_len].rstrip('-')
 
 
 class TranscriptProcessor:
     def __init__(self, config: Config):
         self.config = config
-        self.db = MemorableDB(
-            Path(config["db_path"]),
-            sync_url=config.get("sync_url", ""),
-            auth_token=config.get("sync_auth_token", ""),
-        )
         self.min_messages = config.get("min_messages", 15)
         self.min_human_words = config.get("min_human_words", 100)
         self.stale_minutes = config.get("stale_minutes", 15)
         self.summary_model = config.get("summary_model", "haiku")
+        # Ensure output directories exist
+        SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
     def process_all(self):
-        """Scan transcript directories, queue new files, process pending."""
-        self._scan_for_new_transcripts()
-        pending = self.db.get_pending_transcripts()
-        logger.info(f"Processing {len(pending)} pending transcript(s)")
+        """Scan transcript directories, process new ones."""
+        pending = self._find_unprocessed_transcripts()
+        logger.info(f"Found {len(pending)} unprocessed transcript(s)")
 
-        for item in pending:
+        for jsonl_path in pending:
             try:
-                self._process_one(item)
+                self._process_one(jsonl_path)
             except Exception as e:
-                logger.error(f"Error processing {item['transcript_path']}: {e}")
-                self.db.mark_processed(item["id"], error=str(e))
+                logger.error(f"Error processing {jsonl_path.name}: {e}")
 
-    def _scan_for_new_transcripts(self):
-        """Find new/changed transcripts and add to queue."""
+    def _find_unprocessed_transcripts(self) -> list[Path]:
+        """Find transcripts that don't have a corresponding session file yet."""
+        # Build set of already-processed transcript IDs
+        processed_ids = set()
+        for session_file in SESSIONS_DIR.glob("*.json"):
+            try:
+                data = json.loads(session_file.read_text())
+                if "id" in data:
+                    processed_ids.add(data["id"])
+            except Exception:
+                continue
+
+        pending = []
         for transcript_dir in self.config["transcript_dirs"]:
             base = Path(transcript_dir)
             if not base.exists():
@@ -180,24 +147,27 @@ class TranscriptProcessor:
                 if not project_dir.is_dir():
                     continue
                 for jsonl_file in project_dir.glob("*.jsonl"):
-                    file_hash = self._file_hash(jsonl_file)
-                    if not self.db.is_transcript_processed(file_hash):
-                        # Skip active sessions
-                        age_minutes = (time.time() - jsonl_file.stat().st_mtime) / 60
-                        if age_minutes >= self.stale_minutes:
-                            self.db.queue_transcript(str(jsonl_file), file_hash)
+                    # Skip active sessions
+                    age_minutes = (time.time() - jsonl_file.stat().st_mtime) / 60
+                    if age_minutes < self.stale_minutes:
+                        continue
+                    # Skip already-processed
+                    if jsonl_file.stem in processed_ids:
+                        continue
+                    pending.append(jsonl_file)
 
-    def _process_one(self, queue_item: dict):
-        """Process a single queued transcript."""
-        path = Path(queue_item["transcript_path"])
+        return pending
+
+    def _process_one(self, path: Path):
+        """Process a single transcript → write session JSON file."""
         logger.info(f"Processing {path.name[:20]}")
 
         if not path.exists():
-            self.db.mark_processed(queue_item["id"], error="File not found")
+            logger.warning(f"File not found: {path}")
             return
 
-        # Extract session data from JSONL (mechanical, no LLM)
-        from .notes import extract_session_data
+        # Extract session data from JSONL
+        from .notes import extract_session_data, build_fact_sheet
         note_data = extract_session_data(path)
 
         messages = note_data["messages"]
@@ -205,35 +175,23 @@ class TranscriptProcessor:
         total_words = note_data["total_word_count"]
 
         if len(messages) < self.min_messages:
-            self.db.mark_processed(queue_item["id"], error=f"Too few messages ({len(messages)})")
+            logger.info(f"Skipping {path.name}: too few messages ({len(messages)})")
             return
 
         if human_words < self.min_human_words:
-            self.db.mark_processed(queue_item["id"], error=f"Too few human words ({human_words})")
+            logger.info(f"Skipping {path.name}: too few human words ({human_words})")
             return
 
-        # Skip autonomous wakeup sessions — they write their own journals
+        # Skip autonomous wakeup sessions
         first_human = next((m["text"] for m in messages if m["role"] == "user"), "")
         if "scheduled moment just for you" in first_human.lower():
-            self.db.mark_processed(queue_item["id"], error="Autonomous wakeup session")
+            logger.info(f"Skipping {path.name}: autonomous wakeup session")
             return
         if total_words > 0 and (human_words / total_words) < 0.05:
-            self.db.mark_processed(queue_item["id"], error="Autonomous session (low human ratio)")
+            logger.info(f"Skipping {path.name}: autonomous session (low human ratio)")
             return
 
-        # Skip agent team / teammate sessions — spawned by Task tool
-        agent_phrases = [
-            "you are on the", "you are a testing agent",
-            "you are the architect", "you are the skeptic",
-            "you are the reliability", "you are the product",
-            "you are the performance", "your name is",
-            "check tasklist to find your assigned task",
-        ]
-        if any(p in first_human.lower()[:300] for p in agent_phrases):
-            self.db.mark_processed(queue_item["id"], error="Agent team session")
-            return
-
-        # Skip observer/watcher sessions — they just watch other sessions
+        # Skip observer/watcher sessions
         first_assistant = next((m["text"] for m in messages if m["role"] == "assistant"), "")
         observer_phrases = [
             "i'm ready to observe", "i'll observe", "i'll monitor",
@@ -242,198 +200,80 @@ class TranscriptProcessor:
         ]
         if any(first_assistant.lower().startswith(p) or p in first_assistant.lower()[:200]
                for p in observer_phrases):
-            self.db.mark_processed(queue_item["id"], error="Observer/watcher session")
+            logger.info(f"Skipping {path.name}: observer/watcher session")
             return
+
+        # Already processed? (check by transcript ID = filename stem)
+        transcript_id = path.stem
+        for existing in SESSIONS_DIR.glob("*.json"):
+            try:
+                data = json.loads(existing.read_text())
+                if data.get("id") == transcript_id:
+                    logger.info(f"Already processed: {transcript_id}")
+                    return
+            except Exception:
+                continue
 
         session_date = self._get_session_date(path)
 
-        # Step 1: Build fact sheet and send to Haiku for narrative summary
-        from .notes import build_fact_sheet, compose_session_note
+        # Build fact sheet and summarize with Haiku
         fact_sheet = build_fact_sheet(note_data)
         summary_text = _summarize_with_haiku(fact_sheet, model=self.summary_model)
         logger.info(f"Generated summary: {summary_text[:80]}...")
 
-        # Step 2: Apple model generates emoji header from summary
-        header = self._generate_header(summary_text, session_date)
-
-        # Step 3: Extract structured metadata (GLiNER) from fact sheet
-        metadata_text = f"{summary_text}\n{fact_sheet[:1000]}"
-        metadata = self._extract_metadata(metadata_text)
-        metadata_json = json.dumps(metadata)
-
-        # Extract title from human messages, fall back to header's first tag
+        # Extract title
         title = self._extract_title(messages)
-        if title == "Untitled session" and header:
-            # Pull first tag from header: "🔧 Built auth | ..." → "Built auth"
-            first_tag = header.split('|')[0].strip()
-            # Strip leading emoji
-            tag_text = re.sub(r'^[\U0001F000-\U0001FAFF\U00002702-\U000027B0\U0000FE00-\U0000FE0F\s]+', '', first_tag).strip()
-            if tag_text:
-                title = tag_text
 
-        # Step 4: Generate structured session notes from JSONL
-        note_result = {}
-        try:
-            note_result = compose_session_note(
-                data=note_data,
-                summary_text=summary_text,
-                header=header,
-                date=session_date.strftime("%Y-%m-%d"),
-                title=title,
-                db=self.db,
-            )
-            logger.info(f"Generated notes: {len(note_result.get('note_content', ''))} chars, "
-                       f"{len(note_data.get('files_touched', []))} files")
-        except Exception as e:
-            logger.warning(f"Notes generation error: {e}")
+        # Write session JSON file
+        session_data = {
+            "id": transcript_id,
+            "date": session_date.strftime("%Y-%m-%d"),
+            "title": title,
+            "summary": summary_text,
+            "message_count": len(messages),
+            "word_count": total_words,
+            "human_word_count": human_words,
+            "source_transcript": path.name,
+            "processed_at": datetime.now().isoformat(),
+        }
 
-        # Compute embedding for the summary (for pre-embedded search)
-        summary_embedding = None
-        try:
-            from .embeddings import embed_text
-            summary_embedding = embed_text(summary_text)
-        except Exception as e:
-            logger.warning(f"Failed to embed summary: {e}")
+        # Filename: date-slugified-title.json
+        slug = _slugify(title)
+        filename = f"{session_date.strftime('%Y-%m-%d')}-{slug}.json"
+        output_path = SESSIONS_DIR / filename
 
-        # Store in database with transaction (wrap store_session + mark_processed atomically)
-        try:
-            session_id = self.db.store_session(
-                transcript_id=path.stem,
-                date=session_date.strftime("%Y-%m-%d"),
-                title=title,
-                summary=summary_text,
-                header=header,
-                compressed_50=note_result.get("note_content", ""),
-                metadata=metadata_json,
-                source_path=str(path),
-                message_count=len(messages),
-                word_count=total_words,
-                human_word_count=human_words,
-                note_content=note_result.get("note_content", ""),
-                tags=note_result.get("tags", "[]"),
-                mood=note_result.get("mood", ""),
-                continuity=note_result.get("continuity", 5),
-                summary_embedding=summary_embedding,
-            )
-            self.db.mark_processed(queue_item["id"], session_id=session_id)
-            logger.info(f"Stored session: {title} ({total_words}w, session_id={session_id})")
-        except Exception as e:
-            logger.error(f"Failed to store session: {e}")
-            raise
+        # Handle collision
+        if output_path.exists():
+            filename = f"{session_date.strftime('%Y-%m-%d')}-{slug}-{transcript_id[:8]}.json"
+            output_path = SESSIONS_DIR / filename
 
-        # Step 5: KG extraction from session summary
-        try:
-            from .kg import extract_from_session
-            kg_result = extract_from_session(
-                session_text=summary_text,
-                session_title=title,
-                session_header=header,
-                session_metadata=metadata_json,
-                db=self.db,
-            )
-            if kg_result["entities_added"] or kg_result["relationships_added"]:
-                logger.info(f"KG: +{kg_result['entities_added']} entities, "
-                           f"+{kg_result['relationships_added']} relationships")
-        except Exception as e:
-            logger.warning(f"KG extraction error: {e}")
-
-    # ── Apple Foundation Model (headers only) ───────────────
-
-    def _generate_header(self, compressed_text: str, session_date: datetime) -> str:
-        """Generate an emoji-tagged scannable header from compressed text."""
-        snippet = " ".join(compressed_text.split()[:800])
-        prompt = (
-            f"Create 3-5 tags for this conversation. "
-            f"Each tag: one emoji then 2-4 words. Separate with ' | '. "
-            f"ONE line only. No markdown. No tables.\n"
-            f"Example: 🔧 Built auth system | 💛 Felt overwhelmed | ✅ Chose JWT\n\n"
-            f"{snippet}"
-        )
-        raw = _call_apple_model(prompt)
-        # Sanitize: keep only the first line, strip any markdown table artifacts
-        header = raw.split('\n')[0].strip()
-        header = re.sub(r'\|\s*---[^|]*', '', header)  # strip table separators
-        header = re.sub(r'\s*\|\s*$', '', header)  # trailing pipe
-        return header
-
-    # ── Metadata Extraction (GLiNER) ─────────────────────────
-
-    def _extract_metadata(self, conversation_text: str) -> dict:
-        """Extract structured metadata from conversation using lightweight NLP."""
-        metadata = {}
-
-        # GLiNER entity extraction
-        try:
-            model = _get_gliner()
-            if model is None:
-                raise RuntimeError("GLiNER model not loaded")
-            labels = ["person", "technology", "software tool", "hardware",
-                       "operating system", "command"]
-            words = conversation_text.split()
-            chunk_size = 384
-            entity_counts: dict[tuple[str, str], int] = {}
-            skip_ents = {"user", "claude", "option", "options"}
-
-            for i in range(0, len(words), chunk_size):
-                chunk = " ".join(words[i:i + chunk_size])
-                try:
-                    results = model.predict_entities(chunk, labels, threshold=0.3)
-                    for ent in results:
-                        text = ent["text"].strip()
-                        if text.lower() in skip_ents or len(text) < 2:
-                            continue
-                        key = (text, ent["label"])
-                        entity_counts[key] = entity_counts.get(key, 0) + 1
-                except Exception:
-                    continue
-
-            # Group by label, sorted by frequency
-            entities_by_type: dict[str, list] = {}
-            for (text, label), count in sorted(entity_counts.items(), key=lambda x: -x[1]):
-                entities_by_type.setdefault(label, []).append(
-                    {"name": text, "count": count}
-                )
-            metadata["entities"] = entities_by_type
-        except Exception as e:
-            metadata["entities"] = {}
-            metadata["entities_error"] = str(e)
-
-        return metadata
-
-    # ── Transcript Extraction (moved to notes.py) ────────────────
+        output_path.write_text(json.dumps(session_data, indent=2) + "\n")
+        logger.info(f"Wrote session: {output_path.name} ({total_words}w)")
 
     def _extract_title(self, messages: list[dict]) -> str:
         """Build a title from the first few substantive human messages."""
         human_msgs = [m["text"] for m in messages if m["role"] == "user"][:8]
         for msg in human_msgs:
             text = msg.strip()
-            # Strip "Signal: " prefix from forwarded messages
             if text.startswith("Signal: "):
                 text = text[len("Signal: "):]
-            # Strip XML/HTML-like tags and markdown bold
             text = re.sub(r'<[^>]+>', '', text).strip()
             text = re.sub(r'\*\*', '', text).strip()
-            # Skip tool output artifacts and MCP calls
             if re.match(r'^(ToolSearch|Read|Write|Edit|Glob|Grep|Bash|mcp__)', text):
                 continue
-            # Skip autonomous wakeup preamble / system injections
             if "scheduled moment just for you" in text.lower():
                 continue
             if text.startswith("Caveat:") or text.startswith("PROGRESS SUMMARY"):
                 continue
-            # Skip transcript artifacts and context recovery noise
             if "Claude's Full Response" in text or "Full Response to User" in text:
                 continue
             if text.startswith("Claude:") or text.startswith("User:"):
                 continue
-            # Skip lines that are just timestamps or UUIDs
             if re.match(r'^[\d\-T:\.Z]+$', text) or re.match(r'^[a-f0-9\-]{36}$', text):
                 continue
-            # Skip very short messages (greetings, "hey", "ok", etc.)
             words = text.split()
             if len(words) < 3:
                 continue
-            # Take first line only, then first sentence
             first_line = text.split('\n')[0].strip()
             title = first_line.split('.')[0].split('?')[0].split('!')[0].strip()
             if len(title) < 3:
@@ -441,7 +281,6 @@ class TranscriptProcessor:
             if len(title) > 60:
                 title = title[:57] + "..."
             return title
-        # Fallback: use date-based title
         return "Untitled session"
 
     def _get_session_date(self, jsonl_path: Path) -> datetime:
@@ -456,8 +295,6 @@ class TranscriptProcessor:
         except Exception:
             pass
         return datetime.fromtimestamp(jsonl_path.stat().st_mtime)
-
-    # ── Utility ───────────────────────────────────────────────
 
     @staticmethod
     def _file_hash(path: Path) -> str:

@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 """UserPromptSubmit hook for Memorable.
 
-Captures user prompts with NLEmbedding for semantic search.
-Raw text, no LLM processing — fast and reliable.
+Captures user prompts by appending to ~/.memorable/data/prompts.jsonl.
+No database, no embedding — just fast file append.
 """
 
 import json
+import re
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from server.db import MemorableDB
-from server.config import Config
-from server.observer import embed_text
+DATA_DIR = Path.home() / ".memorable" / "data"
 
 
 def main():
@@ -26,17 +25,11 @@ def main():
         except (json.JSONDecodeError, EOFError):
             return
 
-        config = Config()
-        if not config.get("observer_enabled", True):
-            return
-
         session_id = hook_input.get("session_id", "")
         prompt_text = hook_input.get("prompt", "")
 
         if not session_id or not prompt_text:
             return
-
-        import re
 
         # Skip very short prompts ("yes", "ok", "y", etc.)
         stripped = prompt_text.strip().lower()
@@ -52,14 +45,11 @@ def main():
         if not prompt_text or len(prompt_text) < 5:
             return
 
-        # Skip context recovery prompts — these contain full conversation
-        # history (formatted as **User:** ... **Claude:** ... turn markers)
-        # and aren't actual user messages. Real prompts don't have these
-        # markers at the start of lines.
+        # Skip context recovery prompts
         if re.search(r'^\*\*Claude:\*\*', prompt_text, re.MULTILINE):
             return
 
-        # Skip observer/watcher session prompts — not Matt talking
+        # Skip observer/watcher session prompts
         lower = prompt_text.lower()
         if any(lower.startswith(p) for p in [
             "i'm ready to observe", "i'll observe", "i'll monitor",
@@ -68,32 +58,25 @@ def main():
         ]):
             return
 
-        db = MemorableDB(
-            Path(config["db_path"]),
-            sync_url=config.get("sync_url", ""),
-            auth_token=config.get("sync_auth_token", ""),
-        )
+        # Append to JSONL file
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        prompts_file = DATA_DIR / "prompts.jsonl"
 
-        # Get next prompt number for this session
-        prompt_number = db.get_prompt_count_for_session(session_id) + 1
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "session": session_id,
+            "prompt": prompt_text[:5000],
+            "chars": len(prompt_text),
+        }
 
-        # Embed for semantic search
-        embedding = embed_text(prompt_text[:500])
-
-        db.store_user_prompt(
-            session_id=session_id,
-            prompt_number=prompt_number,
-            prompt_text=prompt_text[:5000],  # cap at 5k chars
-            embedding=embedding,
-        )
+        with open(prompts_file, "a") as f:
+            f.write(json.dumps(entry) + "\n")
 
     except Exception as e:
-        # Never crash — log error and return gracefully
         try:
             with open(error_log_path, "a") as f:
                 f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] user_prompt: ERROR: {e}\n")
         except:
-            # Even logging failed — silently pass
             pass
 
 

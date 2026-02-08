@@ -11,15 +11,7 @@ DEFAULT_CONFIG_PATH = Path.home() / ".memorable" / "config.json"
 
 DEFAULTS = {
     # Paths
-    "memory_dir": str(Path.home() / "claude-memory"),
-    "db_path": str(Path.home() / ".memorable" / "memorable.db"),
     "transcript_dirs": [str(Path.home() / ".claude" / "projects")],
-
-    # libSQL sync — set sync_url to enable embedded replica mode
-    # When set, db_path becomes the local replica and syncs with the server
-    # When unset, db_path is used as a plain local SQLite database
-    "sync_url": "",  # e.g. "http://192.168.68.58:8081"
-    "sync_auth_token": "",  # JWT or empty for no auth
 
     # Summarization
     "summary_model": "haiku",  # claude -p --model <this>
@@ -29,17 +21,6 @@ DEFAULTS = {
     "stale_minutes": 15,
     "min_messages": 15,
     "min_human_words": 100,
-
-    # Startup seed
-    "seed_session_count": 10,      # session notes in startup seed
-
-    # Context seeds
-    "live_capture_interval": 20,  # messages between captures
-
-    # Observer (Apple-native observation pipeline)
-    "observer_enabled": True,
-    "observer_max_tool_output": 3000,
-    "observer_process_interval": 30,  # seconds between queue processing
 }
 
 

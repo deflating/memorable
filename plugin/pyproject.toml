@@ -4,20 +4,14 @@ build-backend = "setuptools.backends._legacy:_Backend"
 
 [project]
 name = "memorable"
-version = "0.2.0"
-description = "Persistent memory for Claude Code sessions"
+version = "0.3.0"
+description = "Persistent memory for Claude Code sessions — files-first architecture"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [{name = "Matt Kennelly"}]
 dependencies = [
     "watchdog>=3.0",
-    "libsql-experimental>=0.0.50",
-    "gliner>=0.2",
-    "numpy<2",
 ]
-
-[project.optional-dependencies]
-embeddings = ["sqlite-vss>=0.1"]
 
 [project.scripts]
 memorable-server = "server.__main__:main"
