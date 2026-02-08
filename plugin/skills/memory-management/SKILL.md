@@ -11,8 +11,7 @@ Memorable provides persistent memory across Claude Code sessions.
 ## When to Use
 
 - **Searching memory**: User asks about past conversations → use `memorable_search_sessions`
-- **Recording significant moments**: Important decision, discovery, or emotional moment → use `memorable_record_significant`
-- **Knowledge graph queries**: Looking up structured facts about people, projects, decisions → use `memorable_query_kg`
+- **Searching observations**: Tool usage and user prompts → use `memorable_search_observations`
 - **System check**: Want to know memory status → use `memorable_get_system_status`
 
 ## Memory Hygiene

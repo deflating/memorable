@@ -167,7 +167,7 @@ class TranscriptProcessor:
             return
 
         # Extract session data from JSONL
-        from .notes import extract_session_data, build_fact_sheet
+        from .transcript import extract_session_data, build_fact_sheet
         note_data = extract_session_data(path)
 
         messages = note_data["messages"]

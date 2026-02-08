@@ -261,18 +261,6 @@ class MemorableDB:
         return sessions
 
     @staticmethod
-    def read_sacred_facts() -> list[dict]:
-        """Read sacred facts from the canonical file."""
-        sacred_file = DATA_DIR / "sacred.json"
-        if not sacred_file.exists():
-            return []
-        try:
-            data = json.loads(sacred_file.read_text())
-            return data.get("facts", [])
-        except Exception:
-            return []
-
-    @staticmethod
     def get_session_file_count() -> int:
         """Count session files without reading them."""
         if not SESSIONS_DIR.exists():

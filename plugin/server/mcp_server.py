@@ -3,14 +3,11 @@
 Exposes tools to Claude Code for memory management:
 - search_sessions: keyword search over session index
 - search_observations: search observations and prompts
-- record_significant: append to sacred.json
 - get_system_status: file counts and health
 """
 
 import json
 import sys
-import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 from .db import MemorableDB, DEFAULT_INDEX_PATH, DATA_DIR
@@ -82,8 +79,6 @@ class MemorableMCP:
         tool_handlers = {
             "memorable_search_sessions": self._tool_search_sessions,
             "memorable_search_observations": self._tool_search_observations,
-            "memorable_record_significant": self._tool_record_significant,
-            "memorable_query_kg": self._tool_query_kg,
             "memorable_get_system_status": self._tool_get_system_status,
         }
 
@@ -165,61 +160,6 @@ class MemorableMCP:
 
         return f"Found results matching '{query}':\n\n" + "\n".join(lines)
 
-    def _tool_record_significant(self, args: dict) -> str:
-        """Append a fact to sacred.json."""
-        description = args.get("description", "")
-        entity_name = args.get("entity", "")
-
-        if not description:
-            return "Please provide a description of the significant moment."
-
-        name = entity_name or description[:80]
-
-        # Read existing sacred facts
-        sacred_file = DATA_DIR / "sacred.json"
-        if sacred_file.exists():
-            try:
-                data = json.loads(sacred_file.read_text())
-            except Exception:
-                data = {"facts": []}
-        else:
-            data = {"facts": []}
-
-        # Append new fact
-        data["facts"].append({
-            "name": name,
-            "description": description,
-            "added": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-        })
-
-        sacred_file.parent.mkdir(parents=True, exist_ok=True)
-        sacred_file.write_text(json.dumps(data, indent=2) + "\n")
-
-        return f"Recorded: {name}"
-
-    def _tool_query_kg(self, args: dict) -> str:
-        """Query sacred facts (replaces old KG)."""
-        facts = MemorableDB.read_sacred_facts()
-        if not facts:
-            return "No knowledge graph entries found. Use memorable_record_significant to add facts."
-
-        entity = args.get("entity", "")
-        entity_type = args.get("type", "")
-
-        if entity:
-            facts = [f for f in facts
-                     if entity.lower() in f.get("name", "").lower()
-                     or entity.lower() in f.get("description", "").lower()]
-
-        if not facts:
-            return f"No entries matching '{entity}'."
-
-        lines = [f"Found {len(facts)} entries:\n"]
-        for f in facts:
-            lines.append(f"- **{f['name']}**: {f.get('description', '')}")
-
-        return "\n".join(lines)
-
     def _tool_get_system_status(self, args: dict) -> str:
         session_count = MemorableDB.get_session_file_count()
 
@@ -236,14 +176,11 @@ class MemorableMCP:
             with open(prompts_file) as f:
                 prompt_count = sum(1 for line in f if line.strip())
 
-        sacred_count = len(MemorableDB.read_sacred_facts())
-
         lines = [
             "## Memorable System Status\n",
             f"- Sessions: {session_count} (JSON files)",
             f"- Observations: {obs_count} (JSONL)",
             f"- User prompts: {prompt_count} (JSONL)",
-            f"- Sacred facts: {sacred_count}",
             f"- Architecture: files-first (Syncthing sync)",
             f"- Data dir: ~/.memorable/data/",
             f"\n### Processing",
@@ -319,37 +256,6 @@ TOOLS = [
                 },
             },
             "required": ["query"],
-        },
-    },
-    {
-        "name": "memorable_record_significant",
-        "description": "Record a significant moment, decision, or fact. Appends to sacred.json — the permanent memory store. Use when something important happens that should be remembered long-term.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "description": {
-                    "type": "string",
-                    "description": "Description of the significant moment or fact",
-                },
-                "entity": {
-                    "type": "string",
-                    "description": "Short name for the entity (defaults to truncated description)",
-                },
-            },
-            "required": ["description"],
-        },
-    },
-    {
-        "name": "memorable_query_kg",
-        "description": "Query the knowledge graph (sacred facts). Search by entity name.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "entity": {
-                    "type": "string",
-                    "description": "Entity name to search for (partial match)",
-                },
-            },
         },
     },
     {

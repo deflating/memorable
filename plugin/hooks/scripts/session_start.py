@@ -39,17 +39,6 @@ def _count_session_files() -> int:
     return len(list(SESSIONS_DIR.glob("*.json")))
 
 
-def _read_sacred_facts() -> list[dict]:
-    sacred_file = DATA_DIR / "sacred.json"
-    if not sacred_file.exists():
-        return []
-    try:
-        data = json.loads(sacred_file.read_text())
-        return data.get("facts", [])
-    except Exception:
-        return []
-
-
 def main():
     error_log_path = Path.home() / ".memorable" / "hook-errors.log"
 
@@ -73,17 +62,6 @@ def main():
         except Exception as e:
             with open(error_log_path, "a") as f:
                 f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] session_start: sessions error: {e}\n")
-
-        # ── Sacred facts ──────────────────────────────────────
-        try:
-            facts = _read_sacred_facts()
-            if facts:
-                parts.append("")
-                parts.append("[Memorable] Sacred facts:")
-                for fact in facts:
-                    parts.append(f"  - {fact['name']}: {fact.get('description', '')}")
-        except Exception:
-            pass
 
         # ── Stats ─────────────────────────────────────────────
         try:

@@ -145,7 +145,7 @@ def extracted_session_data(sample_jsonl_transcript):
 
     Uses extract_session_data() to process the sample transcript.
     """
-    from server.notes import extract_session_data
+    from server.transcript import extract_session_data
     return extract_session_data(sample_jsonl_transcript)
 
 
