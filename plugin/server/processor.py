@@ -230,6 +230,18 @@ class TranscriptProcessor:
             self.db.mark_processed(queue_item["id"], error="Autonomous session (low human ratio)")
             return
 
+        # Skip agent team / teammate sessions — spawned by Task tool
+        agent_phrases = [
+            "you are on the", "you are a testing agent",
+            "you are the architect", "you are the skeptic",
+            "you are the reliability", "you are the product",
+            "you are the performance", "your name is",
+            "check tasklist to find your assigned task",
+        ]
+        if any(p in first_human.lower()[:300] for p in agent_phrases):
+            self.db.mark_processed(queue_item["id"], error="Agent team session")
+            return
+
         # Skip observer/watcher sessions — they just watch other sessions
         first_assistant = next((m["text"] for m in messages if m["role"] == "assistant"), "")
         observer_phrases = [
