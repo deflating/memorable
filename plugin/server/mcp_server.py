@@ -1,7 +1,6 @@
 """MCP server for Memorable.
 
 Exposes tools to Claude Code for memory management:
-- get_startup_seed: recency-gradient context for session startup
 - search_sessions: hybrid keyword + semantic search over sessions
 - record_significant: flag important moments mid-conversation
 - query_kg: structured knowledge graph queries
@@ -83,7 +82,6 @@ class MemorableMCP:
         args = params.get("arguments", {})
 
         tool_handlers = {
-            "memorable_get_startup_seed": self._tool_get_startup_seed,
             "memorable_search_sessions": self._tool_search_sessions,
             "memorable_search_observations": self._tool_search_observations,
             "memorable_get_observations": self._tool_get_observations,
@@ -109,66 +107,6 @@ class MemorableMCP:
             }
 
     # ── Tool Implementations ──────────────────────────────────
-
-    def _tool_get_startup_seed(self, args: dict) -> str:
-        """Build startup context:
-        - Sacred facts (always)
-        - record_significant entries (always)
-        - Recent sessions (keywords, entities, emoji headers)
-        """
-        parts = []
-
-        # Sacred facts (priority 10) — always included
-        sacred = self.db.get_sacred_facts()
-        if sacred:
-            parts.append("## Sacred Facts")
-            for fact in sacred:
-                parts.append(f"- **{fact['name']}** ({fact['type']}): {fact['description']}")
-
-        # Recent record_significant entries (high-priority KG entities)
-        significant = self.db.query_kg(min_priority=7, limit=20)
-        if significant:
-            # Filter to non-sacred entries (sacred already shown above)
-            sig_entries = [e for e in significant if e.get("priority", 0) < 10]
-            if sig_entries:
-                parts.append("\n## Important (recorded)")
-                for e in sig_entries:
-                    parts.append(f"- **{e['name']}** (p:{e['priority']}): {e.get('description', '')}")
-
-        # Recent session summaries with metadata
-        seed_count = self.config.get("seed_session_count", 10)
-        recent = self.db.get_recent_summaries(limit=seed_count)
-        if recent:
-            parts.append("\n## Recent Sessions")
-            for s in recent:
-                header = s.get("header", "")
-                summary = s.get("summary", "")
-                parts.append(f"\n### {s['title']} ({s['date']}, {s['word_count']}w)")
-                if header:
-                    parts.append(header)
-                if summary:
-                    parts.append(f"Keywords: {summary}")
-
-                # Include entity metadata if available
-                metadata_raw = s.get("metadata", "{}")
-                try:
-                    metadata = json.loads(metadata_raw) if metadata_raw else {}
-                except (json.JSONDecodeError, TypeError):
-                    metadata = {}
-
-                entities = metadata.get("entities", {})
-                if entities:
-                    entity_parts = []
-                    for label, ents in entities.items():
-                        names = [e["name"] for e in ents[:5]]
-                        entity_parts.append(f"{label}: {', '.join(names)}")
-                    if entity_parts:
-                        parts.append("Entities: " + " | ".join(entity_parts))
-
-        if not parts:
-            return "No memory data yet. This is a fresh Memorable installation."
-
-        return "\n".join(parts)
 
     def _tool_search_sessions(self, args: dict) -> str:
         """Hybrid search: keyword (SQL LIKE) + semantic (Apple NLEmbedding)."""
@@ -409,7 +347,6 @@ class MemorableMCP:
         description = args.get("description", "")
         entity_name = args.get("entity", "")
         entity_type = args.get("type", "moment")
-        priority = args.get("priority", 7)
 
         if not description:
             return "Please provide a description of the significant moment."
@@ -419,21 +356,18 @@ class MemorableMCP:
             name=name,
             entity_type=entity_type,
             description=description,
-            priority=min(max(priority, 1), 10),
         )
 
-        return f"Recorded: {name} (priority {priority}, type: {entity_type})"
+        return f"Recorded: {name} (type: {entity_type})"
 
     def _tool_query_kg(self, args: dict) -> str:
         entity = args.get("entity")
         entity_type = args.get("type")
-        min_priority = args.get("min_priority", 0)
         limit = args.get("limit", 30)
 
         results = self.db.query_kg(
             entity=entity,
             entity_type=entity_type,
-            min_priority=min_priority,
             limit=limit,
         )
 
@@ -445,10 +379,8 @@ class MemorableMCP:
             meta = ""
             if r.get("rel_type"):
                 meta = f" --[{r['rel_type']}]--> {r.get('target_name', '?')}"
-            priority_marker = "" if r.get("priority", 5) < 10 else " [SACRED]"
             lines.append(
-                f"- **{r['name']}** ({r['type']}, p:{r.get('priority', '?')}){priority_marker}"
-                f": {r.get('description', '')}{meta}"
+                f"- **{r['name']}** ({r['type']}): {r.get('description', '')}{meta}"
             )
 
         return "\n".join(lines)
@@ -463,16 +395,13 @@ class MemorableMCP:
             f"- Total words processed: {stats['total_words_processed']:,}",
             f"- KG entities: {stats['kg_entities']}",
             f"- KG relationships: {stats['kg_relationships']}",
-            f"- Sacred facts (p10): {stats['sacred_facts']}",
-            f"- Context seeds: {stats['context_seeds']}",
             f"- Observations: {stats.get('observations', 0)}",
             f"- Pending observations: {stats.get('pending_observations', 0)}",
             f"- User prompts captured: {stats.get('user_prompts', 0)}",
             f"- Pending transcripts: {stats['pending_transcripts']}",
             f"\n### Config",
-            f"- Processing: Haiku via claude -p (summaries) + YAKE/GLiNER (metadata) + Apple FM (headers)",
+            f"- Processing: Haiku via claude -p (summaries) + GLiNER (metadata) + Apple FM (headers)",
             f"- Summary model: {config_info.get('summary_model', 'haiku')}",
-            f"- Seed: last {config_info.get('seed_session_count', 10)} session notes",
             f"- Watcher enabled: {config_info.get('watcher_enabled')}",
         ]
 
@@ -503,14 +432,6 @@ class MemorableMCP:
 # ── Tool Definitions ──────────────────────────────────────────
 
 TOOLS = [
-    {
-        "name": "memorable_get_startup_seed",
-        "description": "Get startup context for the current session. Uses a recency gradient: sacred facts, flagged important moments, last 2-3 sessions at moderate compression, and older session skeletons. Call this at the start of every session.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {},
-        },
-    },
     {
         "name": "memorable_search_sessions",
         "description": "Search past sessions using hybrid keyword + semantic search (Apple NLEmbedding). Finds sessions by exact keyword match AND conceptual similarity. Use for questions like 'when did we discuss X' or 'what happened with Y'.",
@@ -592,20 +513,13 @@ TOOLS = [
                     "enum": ["person", "project", "decision", "moment", "concept", "location"],
                     "default": "moment",
                 },
-                "priority": {
-                    "type": "integer",
-                    "description": "Priority 1-10. 10=sacred/immutable, 7-9=important, 4-6=contextual, 1-3=ephemeral",
-                    "default": 7,
-                    "minimum": 1,
-                    "maximum": 10,
-                },
             },
             "required": ["description"],
         },
     },
     {
         "name": "memorable_query_kg",
-        "description": "Query the knowledge graph for entities and relationships. Search by entity name, type, or minimum priority level.",
+        "description": "Query the knowledge graph for entities and relationships. Search by entity name or type.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -617,11 +531,6 @@ TOOLS = [
                     "type": "string",
                     "description": "Filter by entity type",
                     "enum": ["person", "project", "decision", "moment", "concept", "location"],
-                },
-                "min_priority": {
-                    "type": "integer",
-                    "description": "Minimum priority level to return (0-10)",
-                    "default": 0,
                 },
                 "limit": {
                     "type": "integer",

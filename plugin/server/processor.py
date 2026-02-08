@@ -4,7 +4,6 @@ Reads .jsonl transcripts, filters with heuristics, summarizes with
 Haiku via `claude -p` (uses existing Claude Code subscription),
 then extracts structured metadata using lightweight NLP tools:
 
-- YAKE: unsupervised keyword extraction (~10MB, no models)
 - GLiNER: zero-shot named entity recognition (~200MB on disk)
 - Apple Foundation Model: emoji tag headers only
 
@@ -28,7 +27,6 @@ logger = logging.getLogger(__name__)
 
 
 # Lazy-loaded extractors
-_yake_extractor = None
 _gliner_model = None
 
 
@@ -42,6 +40,9 @@ def _summarize_with_haiku(fact_sheet: str, model: str = "haiku") -> str:
     system_prompt = (
         "You are a session note writer. You receive a FACT SHEET and output "
         "EXACTLY ONE PARAGRAPH of narrative prose. Nothing else.\n\n"
+        "IMPORTANT: You are NOT making a judgement call about whether this session "
+        "is worth documenting. That decision has already been made. Every fact sheet "
+        "you receive MUST get a summary. Never refuse or say a session isn't worth it.\n\n"
         "RULES:\n"
         "- Past tense, third person. The user's name is Matt.\n"
         "- Be SPECIFIC: mention file names, commands, error messages from the facts.\n"
@@ -110,16 +111,6 @@ def _summarize_with_haiku(fact_sheet: str, model: str = "haiku") -> str:
         return "[Haiku summary failed: timeout after 120s]"
     except FileNotFoundError:
         return "[Haiku summary failed: claude CLI not found]"
-
-
-def _get_yake():
-    global _yake_extractor
-    if _yake_extractor is None:
-        import yake
-        _yake_extractor = yake.KeywordExtractor(
-            lan="en", n=3, top=15, dedupLim=0.7
-        )
-    return _yake_extractor
 
 
 def _get_gliner():
@@ -265,8 +256,7 @@ class TranscriptProcessor:
         # Step 2: Apple model generates emoji header from summary
         header = self._generate_header(summary_text, session_date)
 
-        # Step 3: Extract structured metadata (YAKE + GLiNER) from fact sheet
-        # Use the fact sheet or note data instead of old conversation_text
+        # Step 3: Extract structured metadata (GLiNER) from fact sheet
         metadata_text = f"{summary_text}\n{fact_sheet[:1000]}"
         metadata = self._extract_metadata(metadata_text)
         metadata_json = json.dumps(metadata)
@@ -366,26 +356,11 @@ class TranscriptProcessor:
         header = re.sub(r'\s*\|\s*$', '', header)  # trailing pipe
         return header
 
-    # ── Metadata Extraction (YAKE + GLiNER) ─────────────────
+    # ── Metadata Extraction (GLiNER) ─────────────────────────
 
     def _extract_metadata(self, conversation_text: str) -> dict:
         """Extract structured metadata from conversation using lightweight NLP."""
         metadata = {}
-
-        # YAKE keywords
-        try:
-            kw_extractor = _get_yake()
-            keywords = kw_extractor.extract_keywords(conversation_text)
-            # Filter out generic words
-            skip = {"option", "options", "claude", "user", "yeah", "okay"}
-            metadata["keywords"] = [
-                (kw, round(score, 4))
-                for kw, score in keywords
-                if kw.lower() not in skip
-            ]
-        except Exception as e:
-            metadata["keywords"] = []
-            metadata["keywords_error"] = str(e)
 
         # GLiNER entity extraction
         try:

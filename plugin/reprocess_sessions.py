@@ -1,8 +1,8 @@
 """Reprocess all transcripts with the current metadata pipeline.
 
 Clears existing sessions and processing queue, then re-runs the full
-processing pipeline (Haiku summaries via claude -p + YAKE/GLiNER metadata
-extraction + Apple FM headers) on all transcripts.
+processing pipeline (Haiku summaries + GLiNER metadata extraction +
+Apple FM headers) on all transcripts.
 
 Usage:
     cd memorable/plugin
@@ -66,7 +66,7 @@ def main():
             print(f"  1. Keep existing sessions")
             print(f"  2. Only process unprocessed transcripts")
         print(f"  3. Re-scan {len(all_jsonl)} transcript files")
-        print(f"  4. Process with: Haiku (claude -p) + YAKE + GLiNER + Apple FM")
+        print(f"  4. Process with: Haiku + GLiNER + Apple FM")
         if args.batch:
             print(f"  5. Stop after {args.batch} transcripts")
         print(f"\nUse --apply to run. This will take a while (Haiku + GLiNER per session).")

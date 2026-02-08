@@ -110,7 +110,6 @@ def main():
                     session_title=title,
                     session_header=header,
                     db=db,
-                    priority=5,
                 )
                 added_e = result["entities_added"]
                 added_r = result["relationships_added"]
@@ -162,24 +161,6 @@ def main():
             print(f"  {name}: {count} sessions")
 
     if not args.dry_run:
-        # Update priority for frequently mentioned entities
-        for name, count in all_entity_names.most_common():
-            if count >= 5:
-                # Boost priority for entities mentioned in 5+ sessions
-                new_priority = min(7, 5 + (count // 5))
-                try:
-                    entities = db.query_kg(entity=name, limit=1)
-                    if entities and entities[0].get("priority", 0) < new_priority:
-                        # Use add_entity which does upsert
-                        db.add_entity(
-                            entities[0]["name"],
-                            entities[0]["type"],
-                            description=entities[0].get("description", ""),
-                            priority=new_priority,
-                        )
-                except Exception:
-                    pass
-
         # Final stats
         stats = db.get_stats()
         print()

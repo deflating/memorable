@@ -15,14 +15,6 @@ Memorable provides persistent memory across Claude Code sessions.
 - **Knowledge graph queries**: Looking up structured facts about people, projects, decisions → use `memorable_query_kg`
 - **System check**: Want to know memory status → use `memorable_get_system_status`
 
-## Priority Scoring Guide
-
-When recording to the knowledge graph:
-- **10 (Sacred)**: Identity truths, core relationships, immutable facts. These are NEVER curated away.
-- **7-9 (Important)**: Current job status, active projects, recent decisions. Temporal but significant.
-- **4-6 (Contextual)**: Background facts, preferences, patterns. Useful but not critical.
-- **1-3 (Ephemeral)**: Passing mentions, minor details. Only surfaced when specifically searched.
-
 ## Memory Hygiene
 
 Don't record:

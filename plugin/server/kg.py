@@ -82,7 +82,7 @@ def build_gazetteer(db: MemorableDB) -> dict:
     """
     global _gazetteer, _gazetteer_data
 
-    entities = db.query_kg(min_priority=4, limit=5000)
+    entities = db.query_kg(limit=5000)
     data = {}
     for e in entities:
         etype = e.get("type", "concept")
@@ -371,7 +371,6 @@ def extract_from_session(
     session_header: str = "",
     session_metadata: str | dict = "{}",
     db: MemorableDB | None = None,
-    priority: int = 5,
 ) -> dict:
     """Extract entities and relationships from a session summary.
 
@@ -385,7 +384,6 @@ def extract_from_session(
         session_header: Emoji-tagged header for topic hints
         session_metadata: JSON metadata (may contain GLiNER entities from processing)
         db: Database for storing results and gazetteer lookup
-        priority: Base priority for new entities (default 5)
 
     Returns:
         {"entities_added": int, "relationships_added": int, "entities": list}
@@ -451,21 +449,18 @@ def extract_from_session(
     if db and entities_list:
         # Store entities
         for entity in entities_list:
-            # Known entities get a small priority boost
-            ep = priority + 1 if entity["name"].lower() in known_names else priority
             try:
                 db.add_entity(
                     entity["name"],
                     entity["type"],
                     description=entity.get("description", ""),
-                    priority=ep,
                 )
                 entities_added += 1
             except Exception as e:
                 print(f"  [kg] Entity store error for '{entity['name']}': {e}")
 
         # Store relationships (only where both entities exist)
-        existing = db.query_kg(min_priority=1, limit=5000)
+        existing = db.query_kg(limit=5000)
         existing_names = {e["name"].lower() for e in existing}
         entity_names = {e["name"].lower() for e in entities_list}
         all_known = existing_names | entity_names
@@ -598,10 +593,10 @@ def store_approved_entities(
     approved_names = {e["name"].lower() for e in approved}
 
     for entity in approved:
-        db.add_entity(entity["name"], entity["type"], priority=5)
+        db.add_entity(entity["name"], entity["type"])
         entities_added += 1
 
-    existing = db.query_kg(min_priority=1, limit=5000)
+    existing = db.query_kg(limit=5000)
     existing_names = {e["name"].lower() for e in existing}
     all_known_names = approved_names | existing_names
 
@@ -685,11 +680,11 @@ class KGProcessor:
 
         print(f"  KG: {len(unique)} candidates from {len(observations)} observations")
 
-        # Store directly (GLiNER quality is good enough for priority 4)
+        # Store entities
         entities_added = 0
         for entity in unique:
             try:
-                self.db.add_entity(entity["name"], entity["type"], priority=4)
+                self.db.add_entity(entity["name"], entity["type"])
                 entities_added += 1
             except Exception:
                 pass

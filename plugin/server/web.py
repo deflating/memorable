@@ -260,8 +260,7 @@ class MemorableHandler(BaseHTTPRequestHandler):
         self._json_response(results[:limit])
 
     def _api_kg(self, params):
-        min_priority = int(params.get("min_priority", [0])[0])
-        graph = db.get_kg_graph(min_priority=min_priority)
+        graph = db.get_kg_graph()
         self._json_response(graph)
 
     # ── Analytics endpoints ──────────────────────────────────

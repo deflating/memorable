@@ -12,7 +12,6 @@ authors = [{name = "Matt Kennelly"}]
 dependencies = [
     "watchdog>=3.0",
     "libsql-experimental>=0.0.50",
-    "yake>=0.4",
     "gliner>=0.2",
     "numpy<2",
 ]

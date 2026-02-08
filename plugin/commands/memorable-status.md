@@ -10,7 +10,6 @@ Show the current state of the Memorable memory system.
 Use the `memorable_get_system_status` tool to retrieve and display:
 - Number of stored sessions
 - Knowledge graph entity and relationship counts
-- Sacred facts count
 - Pending transcripts in the processing queue
 - Current configuration
 

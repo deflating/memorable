@@ -220,20 +220,16 @@ class MemorableDB:
     # ── Knowledge Graph ───────────────────────────────────────
 
     def add_entity(self, name: str, entity_type: str, description: str = "",
-                   priority: int = 5, metadata: dict | None = None) -> int:
+                   metadata: dict | None = None) -> int:
         def do(conn):
             cur = conn.execute(
                 """INSERT INTO kg_entities (name, type, description, priority, metadata)
-                   VALUES (?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, 5, ?)
                    ON CONFLICT(name, type) DO UPDATE SET
                      description = excluded.description,
-                     priority = CASE
-                       WHEN kg_entities.priority = 10 THEN 10
-                       ELSE excluded.priority
-                     END,
                      metadata = excluded.metadata,
                      updated_at = ?""",
-                (name, entity_type, description, priority,
+                (name, entity_type, description,
                  json.dumps(metadata or {}), time.time())
             )
             return cur.lastrowid
@@ -270,37 +266,37 @@ class MemorableDB:
     def query_kg(self, entity: str | None = None, entity_type: str | None = None,
                  rel_type: str | None = None, min_priority: int = 0,
                  limit: int = 50) -> list[dict]:
+        """Query KG entities. min_priority kept for API compat but ignored."""
         def do(conn):
             if entity:
                 cur = conn.execute(
-                    """SELECT e.name, e.type, e.description, e.priority, e.metadata,
+                    """SELECT e.name, e.type, e.description, e.metadata,
                               r.rel_type, t.name as target_name, t.type as target_type,
                               r.description as rel_description
                        FROM kg_entities e
                        LEFT JOIN kg_relationships r ON e.id = r.source_id
                        LEFT JOIN kg_entities t ON r.target_id = t.id
-                       WHERE e.name LIKE ? AND e.priority >= ?
-                       ORDER BY e.priority DESC
+                       WHERE e.name LIKE ?
+                       ORDER BY e.name
                        LIMIT ?""",
-                    (f"%{entity}%", min_priority, limit)
+                    (f"%{entity}%", limit)
                 )
             elif entity_type:
                 cur = conn.execute(
-                    """SELECT name, type, description, priority, metadata
+                    """SELECT name, type, description, metadata
                        FROM kg_entities
-                       WHERE type = ? AND priority >= ?
-                       ORDER BY priority DESC
+                       WHERE type = ?
+                       ORDER BY name
                        LIMIT ?""",
-                    (entity_type, min_priority, limit)
+                    (entity_type, limit)
                 )
             else:
                 cur = conn.execute(
-                    """SELECT name, type, description, priority, metadata
+                    """SELECT name, type, description, metadata
                        FROM kg_entities
-                       WHERE priority >= ?
-                       ORDER BY priority DESC
+                       ORDER BY name
                        LIMIT ?""",
-                    (min_priority, limit)
+                    (limit,)
                 )
             return _rows_to_dicts(cur)
         return self._query(do)
@@ -313,41 +309,13 @@ class MemorableDB:
             conn.execute("DELETE FROM kg_entities WHERE id = ?", (entity_id,))
         self._execute(do)
 
-    def delete_entities_below_priority(self, min_priority: int) -> int:
-        """Delete all entities (and their relationships) below a priority threshold.
-        Returns count of deleted entities."""
-        def do(conn):
-            # Get IDs to delete
-            rows = conn.execute(
-                "SELECT id FROM kg_entities WHERE priority < ?", (min_priority,)
-            ).fetchall()
-            ids = [r[0] for r in rows]
-            if not ids:
-                return 0
-            placeholders = ",".join("?" * len(ids))
-            conn.execute(f"DELETE FROM kg_relationships WHERE source_id IN ({placeholders}) OR target_id IN ({placeholders})",
-                         ids + ids)
-            conn.execute(f"DELETE FROM kg_entities WHERE id IN ({placeholders})", ids)
-            return len(ids)
-        return self._execute(do)
-
     def get_all_entities(self, limit: int = 5000) -> list[dict]:
         """Get all entities with their IDs for cleanup operations."""
         def do(conn):
             cur = conn.execute(
-                """SELECT id, name, type, description, priority
-                   FROM kg_entities ORDER BY priority DESC, name LIMIT ?""",
+                """SELECT id, name, type, description
+                   FROM kg_entities ORDER BY name LIMIT ?""",
                 (limit,)
-            )
-            return _rows_to_dicts(cur)
-        return self._query(do)
-
-    def get_sacred_facts(self) -> list[dict]:
-        def do(conn):
-            cur = conn.execute(
-                """SELECT name, type, description, metadata
-                   FROM kg_entities WHERE priority = 10
-                   ORDER BY name"""
             )
             return _rows_to_dicts(cur)
         return self._query(do)
@@ -356,13 +324,11 @@ class MemorableDB:
         """Get full KG as nodes + edges for graph visualization."""
         def do(conn):
             entities = conn.execute(
-                """SELECT id, name, type, description, priority
+                """SELECT id, name, type, description
                    FROM kg_entities
-                   WHERE priority >= ?
-                   ORDER BY priority DESC""",
-                (min_priority,)
+                   ORDER BY name"""
             ).fetchall()
-            cols_e = ["id", "name", "type", "description", "priority"]
+            cols_e = ["id", "name", "type", "description"]
             nodes = [dict(zip(cols_e, row)) for row in entities]
 
             rels = conn.execute(
@@ -696,8 +662,6 @@ class MemorableDB:
                 "sessions": count("SELECT COUNT(*) FROM sessions"),
                 "kg_entities": count("SELECT COUNT(*) FROM kg_entities"),
                 "kg_relationships": count("SELECT COUNT(*) FROM kg_relationships"),
-                "sacred_facts": count("SELECT COUNT(*) FROM kg_entities WHERE priority = 10"),
-                "context_seeds": count("SELECT COUNT(*) FROM context_seeds"),
                 "pending_transcripts": count("SELECT COUNT(*) FROM processing_queue WHERE status = 'pending'"),
                 "total_words_processed": count("SELECT COALESCE(SUM(word_count), 0) FROM sessions"),
                 "observations": count("SELECT COUNT(*) FROM observations"),
@@ -818,14 +782,14 @@ class MemorableDB:
         return self._query(do)
 
     def get_top_entities(self, limit: int = 20) -> list[dict]:
-        """Get top entities by relationship count + priority."""
+        """Get top entities by relationship count."""
         def do(conn):
             cur = conn.execute(
-                """SELECT e.id, e.name, e.type, e.priority, e.description,
+                """SELECT e.id, e.name, e.type, e.description,
                           (SELECT COUNT(*) FROM kg_relationships r
                            WHERE r.source_id = e.id OR r.target_id = e.id) as rel_count
                    FROM kg_entities e
-                   ORDER BY rel_count DESC, e.priority DESC
+                   ORDER BY rel_count DESC
                    LIMIT ?""",
                 (limit,)
             )
@@ -836,7 +800,7 @@ class MemorableDB:
         """Get most recently created/updated entities."""
         def do(conn):
             cur = conn.execute(
-                """SELECT id, name, type, priority, description, created_at
+                """SELECT id, name, type, description, created_at
                    FROM kg_entities
                    ORDER BY created_at DESC
                    LIMIT ?""",

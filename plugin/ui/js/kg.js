@@ -3,7 +3,7 @@
  * Force-directed graph rendered on a canvas element.
  * Supports pan, zoom, drag, hover tooltips, connection highlighting,
  * curved edges with arrows, node clustering, click-to-focus, search,
- * priority glow, and double-click to expand.
+ * and double-click to expand.
  */
 
 import { esc } from './utils.js';
@@ -60,7 +60,6 @@ export async function loadKG(container, apiFn) {
         id: key,
         name: n.name,
         type: n.type,
-        priority: n.priority || 0,
         x: 0, y: 0,
         vx: 0, vy: 0,
       };
@@ -204,14 +203,11 @@ function startGraph(nodes, edges, connections, adjacency) {
 
   const maxVelocity = 8;
 
-  // Sort nodes by priority for draw order (low priority first, high priority on top)
+  // Sort nodes by connection count for draw order (fewer connections first, hubs on top)
   function getSortedNodes() {
-    return [...nodes].sort((a, b) => (a.priority || 0) - (b.priority || 0));
+    return [...nodes].sort((a, b) => (connections[a.id] || 0) - (connections[b.id] || 0));
   }
   let sortedNodes = getSortedNodes();
-
-  // Precompute max priority for glow scaling
-  const maxPriority = Math.max(1, ...nodes.map(n => n.priority || 0));
 
   // Get 1-hop neighbors
   function getNeighbors(node) {
@@ -492,7 +488,7 @@ function startGraph(nodes, edges, connections, adjacency) {
 
     ctx.globalAlpha = 1;
 
-    // Nodes (sorted by priority - low first, high on top)
+    // Nodes (sorted by connections - fewer first, hubs on top)
     sortedNodes.forEach(n => {
       const r = getNodeRadius(n);
       const color = KG_COLORS[n.type] || '#94a3b8';
@@ -510,21 +506,6 @@ function startGraph(nodes, edges, connections, adjacency) {
       const dimmed = dimmedByFocus || dimmedByHover || dimmedBySearch;
 
       ctx.globalAlpha = dimmed ? 0.1 : 1;
-
-      // Priority-based glow ring
-      if (!dimmed && (n.priority || 0) > 0) {
-        const prioNorm = (n.priority || 0) / maxPriority;
-        if (prioNorm > 0.3) {
-          const glowR = r + 4 + prioNorm * 8;
-          const gradient = ctx.createRadialGradient(n.x, n.y, r, n.x, n.y, glowR);
-          gradient.addColorStop(0, color + Math.round(prioNorm * 40).toString(16).padStart(2, '0'));
-          gradient.addColorStop(1, color + '00');
-          ctx.beginPath();
-          ctx.arc(n.x, n.y, glowR, 0, Math.PI * 2);
-          ctx.fillStyle = gradient;
-          ctx.fill();
-        }
-      }
 
       // Hover/focus outer glow
       if (isHovered || isFocused) {
@@ -608,7 +589,7 @@ function startGraph(nodes, edges, connections, adjacency) {
 
   function findNode(sx, sy) {
     const [wx, wy] = screenToWorld(sx, sy);
-    // Search in reverse draw order (highest priority first)
+    // Search in reverse draw order (most connected first)
     for (let i = sortedNodes.length - 1; i >= 0; i--) {
       const n = sortedNodes[i];
       const r = getNodeRadius(n) + 6;
@@ -729,7 +710,7 @@ function startGraph(nodes, edges, connections, adjacency) {
           <div class="tt-name">${esc(node.name)}</div>
           <div class="tt-type">
             <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:5px;vertical-align:middle"></span>
-            ${node.type} &middot; priority ${node.priority || 0} &middot; ${conn} connection${conn !== 1 ? 's' : ''}
+            ${node.type} &middot; ${conn} connection${conn !== 1 ? 's' : ''}
           </div>
           ${connHTML}`;
       } else if (hoveredEdge >= 0 && tooltip) {

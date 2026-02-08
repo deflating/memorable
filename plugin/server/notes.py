@@ -951,7 +951,7 @@ def _calculate_continuity(data: dict, db: MemorableDB) -> int:
 
         # Get recent session entities from KG
         recent_entities = set()
-        entities = db.query_kg(min_priority=4, limit=200)
+        entities = db.query_kg(limit=200)
         for e in entities:
             recent_entities.add(e["name"].lower())
 

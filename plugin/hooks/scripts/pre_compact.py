@@ -30,7 +30,7 @@ def main():
         print(
             "[Memorable] Context compaction incoming. "
             "If there are important decisions, discoveries, or context from this session, "
-            "use memorable_record_significant (priority 1-10) to save them to the knowledge graph."
+            "use memorable_record_significant to save them to the knowledge graph."
         )
 
     except Exception as e:

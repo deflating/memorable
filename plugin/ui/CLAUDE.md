@@ -31,7 +31,7 @@ Served by `server/web.py` on port 7777. Endpoints:
 - `GET /api/sessions?limit=N` — session list
 - `GET /api/session?id=TRANSCRIPT_ID` — single session with its observations and prompts
 - `GET /api/search?q=QUERY&limit=N` — search observations and prompts
-- `GET /api/kg?min_priority=N` — knowledge graph nodes and edges
+- `GET /api/kg` — knowledge graph nodes and edges
 
 All API responses are JSON. The backend reads from a SQLite database.
 
