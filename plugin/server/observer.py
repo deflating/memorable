@@ -9,12 +9,16 @@ implementations. The interface stays the same.
 """
 
 import json
+import logging
 import subprocess
 from pathlib import Path
 
 from .db import MemorableDB
 from .config import Config
+from .constants import SKIP_TOOLS
 from .embeddings import embed_text, cosine_distance  # noqa: F401 — re-exported
+
+logger = logging.getLogger(__name__)
 
 
 # ── Apple Foundation Model ────────────────────────────────────
@@ -36,11 +40,6 @@ def _call_afm(prompt: str) -> str:
 
 
 # ── Observation Generation ────────────────────────────────────
-
-SKIP_TOOLS = {
-    "TodoWrite", "AskUserQuestion", "ListMcpResourcesTool",
-    "ToolSearch", "EnterPlanMode", "ExitPlanMode",
-}
 
 # Map our simple action types to the stored observation_type
 _ACTION_TO_TYPE = {
@@ -500,11 +499,12 @@ class ObservationProcessor:
                         "tool_input": group.get("tool_input", "")[:500],
                         "tool_response": group.get("tool_response", "")[:500],
                     })
+                    logger.info(f"Created observation: {obs['title']}")
                 else:
                     for qid in group["_queue_ids"]:
                         self.db.mark_observation_queued(qid)
             except Exception as e:
-                print(f"  Observation error: {e}")
+                logger.error(f"Observation error: {e}")
                 for qid in group.get("_queue_ids", []):
                     self.db.mark_observation_queued(qid)
 
@@ -516,10 +516,10 @@ class ObservationProcessor:
                     self._kg_processor = KGProcessor(self.config)
                 result = self._kg_processor.process_observations(new_observations)
                 if result["entities_added"] or result["relationships_added"]:
-                    print(f"  KG: +{result['entities_added']} entities, "
-                          f"+{result['relationships_added']} relationships")
+                    logger.info(f"KG: +{result['entities_added']} entities, "
+                               f"+{result['relationships_added']} relationships")
             except Exception as e:
-                print(f"  KG extraction error: {e}")
+                logger.warning(f"KG extraction error: {e}")
 
     def _group_and_deduplicate(self, pending: list[dict]) -> list[dict]:
         """Group consecutive tool calls and merge redundant ones."""

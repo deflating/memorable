@@ -209,6 +209,36 @@ export function renderSessionDetail(session, observations, prompts) {
     ${renderMiniStats(observations, prompts)}
   </div>`;
 
+  // Session Notes section (if available)
+  if (s.note_content || s.compressed_50) {
+    html += `<div class="detail-section session-notes-section">
+      <h3>Session Notes</h3>
+      <div id="session-notes-content" class="session-notes-content">`;
+
+    if (s.note_content) {
+      // note_content is markdown — render as preformatted with basic formatting
+      const noteHtml = s.note_content
+        .split('\n')
+        .map(line => {
+          // Basic markdown-to-HTML: headers, lists, bold
+          if (line.startsWith('## ')) return `<h4>${esc(line.slice(3))}</h4>`;
+          if (line.startsWith('### ')) return `<h5>${esc(line.slice(4))}</h5>`;
+          if (line.startsWith('- ')) return `<li>${esc(line.slice(2))}</li>`;
+          if (line.startsWith('**') && line.endsWith('**')) {
+            return `<p><strong>${esc(line.slice(2, -2))}</strong></p>`;
+          }
+          if (line.trim() === '') return '<br>';
+          return `<p>${esc(line)}</p>`;
+        })
+        .join('');
+      html += noteHtml;
+    } else if (s.compressed_50) {
+      html += `<p>${esc(s.compressed_50)}</p>`;
+    }
+
+    html += `</div></div>`;
+  }
+
   const timeline = [
     ...observations.map(o => ({ ...o, kind: 'observation' })),
     ...prompts.map(p => ({ ...p, kind: 'prompt' })),

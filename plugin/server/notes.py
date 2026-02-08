@@ -15,12 +15,16 @@ See SESSION_NOTES_BRIEF.md for the full design rationale.
 """
 
 import json
+import logging
 import re
 import subprocess
 from pathlib import Path
 from collections import Counter
 
 from .db import MemorableDB
+from .constants import SKIP_TOOLS
+
+logger = logging.getLogger(__name__)
 
 
 # ── Emotional / salience keywords for quote selection ────────
@@ -45,13 +49,8 @@ _TURNING_PHRASES = {
     "i give up", "one more", "try again", "go nuclear",
 }
 
-# Tools to skip when extracting action summaries
-_SKIP_TOOLS = {
-    "TodoWrite", "AskUserQuestion", "ListMcpResourcesTool",
-    "ToolSearch", "EnterPlanMode", "ExitPlanMode",
-    "TaskCreate", "TaskUpdate", "TaskList", "TaskGet",
-    "SendMessage", "TeamCreate", "TeamDelete",
-}
+# _SKIP_TOOLS imported from constants.py
+_SKIP_TOOLS = SKIP_TOOLS
 
 # Map tool names to action verbs
 _TOOL_ACTIONS = {

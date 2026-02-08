@@ -186,14 +186,27 @@ class MemorableMCP:
             """
             return max(0.0, (1.5 - dist) / 0.7)
 
+        # ── Embed query once ──
+        query_emb = embed_text(query)
+
         # ── Keyword search (SQL LIKE) — keyword matches get a bonus ──
         keyword_results = self.db.search_sessions(query, limit=limit * 2)
         seen_ids = set()
         for s in keyword_results:
             seen_ids.add(s["id"])
             text = f"{s['title']}. {s.get('summary', '')} {s.get('header', '')}"
-            dist = cosine_distance(query, text)
-            score = 0.6 * _semantic_score(dist) + 0.4
+            if query_emb:
+                text_emb = embed_text(text)
+                if text_emb:
+                    from .embeddings import cosine_distance_vectors
+                    dist = cosine_distance_vectors(query_emb, text_emb)
+                    sem = _semantic_score(dist)
+                else:
+                    sem = 0.0
+            else:
+                dist = cosine_distance(query, text)
+                sem = _semantic_score(dist)
+            score = 0.6 * sem + 0.4
             scored.append((score, s))
 
         # ── Semantic-only pass on all sessions ──
@@ -202,8 +215,18 @@ class MemorableMCP:
             if s["id"] in seen_ids:
                 continue
             text = f"{s['title']}. {s.get('summary', '')} {s.get('header', '')}"
-            dist = cosine_distance(query, text)
-            sem = _semantic_score(dist)
+            if query_emb:
+                text_emb = embed_text(text)
+                if text_emb:
+                    from .embeddings import cosine_distance_vectors
+                    dist = cosine_distance_vectors(query_emb, text_emb)
+                    sem = _semantic_score(dist)
+                else:
+                    # NULL embedding — skip this session
+                    continue
+            else:
+                dist = cosine_distance(query, text)
+                sem = _semantic_score(dist)
             if sem > 0.15:
                 scored.append((sem, s))
 
@@ -221,6 +244,9 @@ class MemorableMCP:
                 lines.append(s["header"])
             if s.get("summary"):
                 lines.append(s["summary"])
+            # Include compressed_50 (Haiku summary) if available
+            if s.get("compressed_50"):
+                lines.append(f"\n{s['compressed_50'][:300]}")
             lines.append("")
 
         return "\n".join(lines)
@@ -239,14 +265,27 @@ class MemorableMCP:
         def _semantic_score(dist: float) -> float:
             return max(0.0, (1.5 - dist) / 0.7)
 
+        # ── Embed query once ──
+        query_emb = embed_text(query)
+
         # ── Observations: keyword + semantic ──
         if not obs_type or obs_type != "prompt":
             keyword_results = self.db.search_observations_keyword(query, limit=limit * 2)
 
             for obs in keyword_results:
                 text = f"{obs['title']}. {obs['summary']}"
-                dist = cosine_distance(query, text)
-                score = 0.6 * _semantic_score(dist) + 0.4
+                if query_emb:
+                    text_emb = embed_text(text)
+                    if text_emb:
+                        from .embeddings import cosine_distance_vectors
+                        dist = cosine_distance_vectors(query_emb, text_emb)
+                        sem = _semantic_score(dist)
+                    else:
+                        sem = 0.0
+                else:
+                    dist = cosine_distance(query, text)
+                    sem = _semantic_score(dist)
+                score = 0.6 * sem + 0.4
                 scored.append((score, "obs", obs))
 
             # Semantic-only pass on recent observations
@@ -256,8 +295,18 @@ class MemorableMCP:
                 if obs["id"] in seen_ids:
                     continue
                 text = f"{obs['title']}. {obs['summary']}"
-                dist = cosine_distance(query, text)
-                sem = _semantic_score(dist)
+                if query_emb:
+                    text_emb = embed_text(text)
+                    if text_emb:
+                        from .embeddings import cosine_distance_vectors
+                        dist = cosine_distance_vectors(query_emb, text_emb)
+                        sem = _semantic_score(dist)
+                    else:
+                        # NULL embedding — skip
+                        continue
+                else:
+                    dist = cosine_distance(query, text)
+                    sem = _semantic_score(dist)
                 if sem > 0.15:
                     scored.append((sem, "obs", obs))
 
@@ -266,8 +315,18 @@ class MemorableMCP:
             keyword_prompts = self.db.search_user_prompts(query, limit=limit * 2)
 
             for p in keyword_prompts:
-                dist = cosine_distance(query, p["prompt_text"][:500])
-                score = 0.6 * _semantic_score(dist) + 0.4
+                if query_emb:
+                    text_emb = embed_text(p["prompt_text"][:500])
+                    if text_emb:
+                        from .embeddings import cosine_distance_vectors
+                        dist = cosine_distance_vectors(query_emb, text_emb)
+                        sem = _semantic_score(dist)
+                    else:
+                        sem = 0.0
+                else:
+                    dist = cosine_distance(query, p["prompt_text"][:500])
+                    sem = _semantic_score(dist)
+                score = 0.6 * sem + 0.4
                 scored.append((score, "prompt", p))
 
         # Filter observations by type (but not prompts — they don't have types)

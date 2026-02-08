@@ -7,9 +7,12 @@ To swap in a local MLX model later, just change `call_llm()`.
 """
 
 import json
+import logging
 import re
 import subprocess
 import shutil
+
+logger = logging.getLogger(__name__)
 
 
 def _find_claude() -> str | None:
@@ -31,7 +34,7 @@ def call_llm(prompt: str, system: str = "",
     """
     claude_path = _find_claude()
     if not claude_path:
-        print("  [llm] claude CLI not found in PATH")
+        logger.warning("claude CLI not found in PATH")
         return ""
 
     cmd = [
@@ -57,14 +60,14 @@ def call_llm(prompt: str, system: str = "",
         output = result.stdout.strip()
         if result.returncode != 0 and not output:
             stderr = result.stderr.strip()
-            print(f"  [llm] claude CLI error: {stderr[:200]}")
+            logger.warning(f"claude CLI error: {stderr[:200]}")
             return ""
         return output
     except subprocess.TimeoutExpired:
-        print("  [llm] claude CLI timed out")
+        logger.warning("claude CLI timed out")
         return ""
     except Exception as e:
-        print(f"  [llm] error: {e}")
+        logger.error(f"LLM call error: {e}")
         return ""
 
 
@@ -87,5 +90,5 @@ def call_llm_json(prompt: str, system: str = "",
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        print(f"  [llm] JSON parse failed: {text[:200]}")
+        logger.warning(f"JSON parse failed: {text[:200]}")
         return None

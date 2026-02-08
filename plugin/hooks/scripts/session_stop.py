@@ -9,6 +9,7 @@ and Apple NLEmbedding for the embedding.
 
 import json
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -19,48 +20,60 @@ from server.observer import generate_session_summary, embed_text
 
 
 def main():
+    error_log_path = Path.home() / ".memorable" / "hook-errors.log"
+
     try:
-        hook_input = json.loads(sys.stdin.read())
-    except (json.JSONDecodeError, EOFError):
-        hook_input = {}
+        try:
+            hook_input = json.loads(sys.stdin.read())
+        except (json.JSONDecodeError, EOFError):
+            hook_input = {}
 
-    session_id = hook_input.get("session_id", "")
-    if not session_id:
-        return
+        session_id = hook_input.get("session_id", "")
+        if not session_id:
+            return
 
-    config = Config()
-    if not config.get("observer_enabled", True):
-        return
+        config = Config()
+        if not config.get("observer_enabled", True):
+            return
 
-    db = MemorableDB(
-        Path(config["db_path"]),
-        sync_url=config.get("sync_url", ""),
-        auth_token=config.get("sync_auth_token", ""),
-    )
+        db = MemorableDB(
+            Path(config["db_path"]),
+            sync_url=config.get("sync_url", ""),
+            auth_token=config.get("sync_auth_token", ""),
+        )
 
-    # Get all observations for this session
-    observations = db.get_observations_by_session(session_id)
-    if len(observations) < 2:
-        return  # not enough to summarize
+        # Get all observations for this session
+        observations = db.get_observations_by_session(session_id)
+        if len(observations) < 2:
+            return  # not enough to summarize
 
-    # Generate session summary via afm
-    summary = generate_session_summary(observations, session_id)
-    if not summary:
-        return
+        # Generate session summary via afm
+        summary = generate_session_summary(observations, session_id)
+        if not summary:
+            return
 
-    # Embed and store
-    embed_str = f"{summary['title']}. {summary['summary']}"
-    embedding = embed_text(embed_str)
+        # Embed and store
+        embed_str = f"{summary['title']}. {summary['summary']}"
+        embedding = embed_text(embed_str)
 
-    db.store_observation(
-        session_id=session_id,
-        obs_type="session_summary",
-        title=summary["title"],
-        summary=summary["summary"],
-        files=json.dumps(summary.get("files", [])),
-        embedding=embedding,
-        tool_name="session_stop",
-    )
+        db.store_observation(
+            session_id=session_id,
+            obs_type="session_summary",
+            title=summary["title"],
+            summary=summary["summary"],
+            files=json.dumps(summary.get("files", [])),
+            embedding=embedding,
+            tool_name="session_stop",
+        )
+
+    except Exception as e:
+        # Never crash — log error and return gracefully
+        try:
+            with open(error_log_path, "a") as f:
+                f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] session_stop: ERROR: {e}\n")
+        except:
+            # Even logging failed — silently pass
+            pass
 
 
 if __name__ == "__main__":

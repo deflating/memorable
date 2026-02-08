@@ -12,12 +12,15 @@ This produces dramatically better entity candidates.
 """
 
 import json
+import logging
 import re
 from pathlib import Path
 
 from .db import MemorableDB
 from .config import Config
 from .llm import call_llm_json
+
+logger = logging.getLogger(__name__)
 
 # ── Entity & Relationship Types ─────────────────────────────
 

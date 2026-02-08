@@ -1367,6 +1367,55 @@ main.wide {
   background: var(--border-subtle);
 }
 
+.search-session-group {
+  margin: 12px 0;
+  padding: 12px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  animation: fadeIn 0.3s ease-out both;
+}
+
+.search-session-group-header {
+  display: flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  cursor: pointer;
+  transition: color var(--transition);
+}
+
+.search-session-group-header:hover {
+  color: var(--accent);
+}
+
+.search-session-group .card {
+  margin: 8px 0;
+  background: var(--bg-card);
+}
+
+.search-group-more {
+  font-size: 12px;
+  color: var(--text-dim);
+  text-align: center;
+  padding: 8px;
+  margin-top: 8px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: all var(--transition);
+}
+
+.search-group-more:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
 /* ── Load More Button ─────────────────── */
 
 .load-more-btn {
@@ -1447,4 +1496,62 @@ main.wide {
   .analytics-grid { grid-template-columns: 1fr; }
   .analytics-donut-layout { flex-direction: column; align-items: flex-start; }
   .feat-kbd-panel { display: none; }
+}
+
+/* ── Session Notes Section ────────────────── */
+
+.session-notes-section {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  margin-bottom: 24px;
+}
+
+.session-notes-content {
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.session-notes-content h4 {
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 600;
+  margin: 16px 0 8px 0;
+  letter-spacing: 0.3px;
+}
+
+.session-notes-content h4:first-child {
+  margin-top: 0;
+}
+
+.session-notes-content h5 {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  margin: 12px 0 6px 0;
+  letter-spacing: 0.2px;
+}
+
+.session-notes-content p {
+  margin: 8px 0;
+  color: var(--text-secondary);
+}
+
+.session-notes-content li {
+  margin: 6px 0 6px 20px;
+  color: var(--text-secondary);
+  list-style-type: disc;
+}
+
+.session-notes-content strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.session-notes-content br {
+  display: block;
+  content: "";
+  margin: 4px 0;
 }

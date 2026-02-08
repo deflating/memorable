@@ -57,6 +57,19 @@ function renderSearchSession(s, query, i = 0) {
   </div>`;
 }
 
+/** Group observations by session */
+function groupObservationsBySession(observations) {
+  const sessionMap = new Map();
+  for (const obs of observations) {
+    const sid = obs.session_id || 'unknown';
+    if (!sessionMap.has(sid)) {
+      sessionMap.set(sid, []);
+    }
+    sessionMap.get(sid).push(obs);
+  }
+  return sessionMap;
+}
+
 /** Render grouped semantic results */
 function renderSemanticSearch(data, query) {
   const observations = data.observations || [];
@@ -88,10 +101,41 @@ function renderSemanticSearch(data, query) {
   }
 
   if (observations.length) {
-    html += `<div class="search-group">
-      <div class="search-group-title">Observations</div>
-      ${observations.map((o, i) => renderSearchObservation(o, query, i)).join('')}
-    </div>`;
+    // Group observations by session
+    const grouped = groupObservationsBySession(observations);
+    const shouldGroup = grouped.size < observations.length; // Only group if there are duplicates
+
+    if (shouldGroup) {
+      html += `<div class="search-group">
+        <div class="search-group-title">Observations (grouped by session)</div>`;
+
+      let i = 0;
+      for (const [sessionId, obs] of grouped.entries()) {
+        if (obs.length === 1) {
+          html += renderSearchObservation(obs[0], query, i++);
+        } else {
+          // Multiple observations from same session — render as a group
+          const topObs = obs[0]; // Highest-scoring
+          html += `<div class="search-session-group" style="animation-delay: ${i * 0.03}s">
+            <div class="search-session-group-header" onclick="window._loadSessionDetail('${esc(sessionId)}')">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" style="opacity: 0.5; margin-right: 6px;">
+                <path d="M2 4c0-1.1.9-2 2-2h8c1.1 0 2 .9 2 2v8c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V4z" stroke="currentColor" stroke-width="1.3" fill="none"/>
+              </svg>
+              <span>${obs.length} observation${obs.length !== 1 ? 's' : ''} from session ${sessionId.slice(0, 12)}...</span>
+            </div>
+            ${obs.slice(0, 3).map((o, j) => renderSearchObservation(o, query, i++)).join('')}
+            ${obs.length > 3 ? `<div class="search-group-more" onclick="window._loadSessionDetail('${esc(sessionId)}')">+${obs.length - 3} more...</div>` : ''}
+          </div>`;
+        }
+      }
+      html += `</div>`;
+    } else {
+      // No grouping needed
+      html += `<div class="search-group">
+        <div class="search-group-title">Observations</div>
+        ${observations.map((o, i) => renderSearchObservation(o, query, i)).join('')}
+      </div>`;
+    }
   }
 
   if (prompts.length) {

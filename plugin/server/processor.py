@@ -14,6 +14,7 @@ searchable index.
 
 import json
 import hashlib
+import logging
 import re
 import subprocess
 import time
@@ -22,6 +23,8 @@ from datetime import datetime
 
 from .db import MemorableDB
 from .config import Config
+
+logger = logging.getLogger(__name__)
 
 
 # Lazy-loaded extractors
@@ -167,13 +170,13 @@ class TranscriptProcessor:
         """Scan transcript directories, queue new files, process pending."""
         self._scan_for_new_transcripts()
         pending = self.db.get_pending_transcripts()
-        print(f"Processing {len(pending)} pending transcript(s)...")
+        logger.info(f"Processing {len(pending)} pending transcript(s)")
 
         for item in pending:
             try:
                 self._process_one(item)
             except Exception as e:
-                print(f"  Error processing {item['transcript_path']}: {e}")
+                logger.error(f"Error processing {item['transcript_path']}: {e}")
                 self.db.mark_processed(item["id"], error=str(e))
 
     def _scan_for_new_transcripts(self):
@@ -196,25 +199,27 @@ class TranscriptProcessor:
     def _process_one(self, queue_item: dict):
         """Process a single queued transcript."""
         path = Path(queue_item["transcript_path"])
-        print(f"  Processing {path.name[:20]}...")
+        logger.info(f"Processing {path.name[:20]}")
 
         if not path.exists():
             self.db.mark_processed(queue_item["id"], error="File not found")
             return
 
-        # Extract conversation
-        messages = self._extract_conversation(path)
+        # Extract session data from JSONL (mechanical, no LLM)
+        from .notes import extract_session_data
+        note_data = extract_session_data(path)
+
+        messages = note_data["messages"]
+        human_words = note_data["user_word_count"]
+        total_words = note_data["total_word_count"]
 
         if len(messages) < self.min_messages:
             self.db.mark_processed(queue_item["id"], error=f"Too few messages ({len(messages)})")
             return
 
-        human_words = sum(len(m["text"].split()) for m in messages if m["role"] == "user")
         if human_words < self.min_human_words:
             self.db.mark_processed(queue_item["id"], error=f"Too few human words ({human_words})")
             return
-
-        total_words = sum(len(m["text"].split()) for m in messages)
 
         # Skip autonomous wakeup sessions — they write their own journals
         first_human = next((m["text"] for m in messages if m["role"] == "user"), "")
@@ -237,23 +242,21 @@ class TranscriptProcessor:
             self.db.mark_processed(queue_item["id"], error="Observer/watcher session")
             return
 
-        conversation_text = self._format_conversation(messages)
         session_date = self._get_session_date(path)
 
-        # Step 0: Extract structured session data from JSONL (mechanical, no LLM)
-        from .notes import extract_session_data, build_fact_sheet, compose_session_note
-        note_data = extract_session_data(path)
-
         # Step 1: Build fact sheet and send to Haiku for narrative summary
+        from .notes import build_fact_sheet, compose_session_note
         fact_sheet = build_fact_sheet(note_data)
         summary_text = _summarize_with_haiku(fact_sheet, model=self.summary_model)
-        print(f"    Summary: {summary_text[:80]}...")
+        logger.info(f"Generated summary: {summary_text[:80]}...")
 
         # Step 2: Apple model generates emoji header from summary
         header = self._generate_header(summary_text, session_date)
 
-        # Step 3: Extract structured metadata (YAKE + GLiNER)
-        metadata = self._extract_metadata(conversation_text)
+        # Step 3: Extract structured metadata (YAKE + GLiNER) from fact sheet
+        # Use the fact sheet or note data instead of old conversation_text
+        metadata_text = f"{summary_text}\n{fact_sheet[:1000]}"
+        metadata = self._extract_metadata(metadata_text)
         metadata_json = json.dumps(metadata)
 
         # Extract title from human messages, fall back to header's first tag
@@ -277,33 +280,44 @@ class TranscriptProcessor:
                 title=title,
                 db=self.db,
             )
-            print(f"    Notes: {len(note_result.get('note_content', ''))} chars, "
-                  f"{len(note_data.get('files_touched', []))} files, "
-                  f"{len(note_data.get('errors', []))} errors")
+            logger.info(f"Generated notes: {len(note_result.get('note_content', ''))} chars, "
+                       f"{len(note_data.get('files_touched', []))} files")
         except Exception as e:
-            print(f"    Notes generation error: {e}")
+            logger.warning(f"Notes generation error: {e}")
 
-        # Store in database
-        session_id = self.db.store_session(
-            transcript_id=path.stem,
-            date=session_date.strftime("%Y-%m-%d"),
-            title=title,
-            summary=summary_text,
-            header=header,
-            compressed_50=note_result.get("note_content", ""),
-            metadata=metadata_json,
-            source_path=str(path),
-            message_count=len(messages),
-            word_count=total_words,
-            human_word_count=human_words,
-            note_content=note_result.get("note_content", ""),
-            tags=note_result.get("tags", "[]"),
-            mood=note_result.get("mood", ""),
-            continuity=note_result.get("continuity", 5),
-        )
+        # Compute embedding for the summary (for pre-embedded search)
+        summary_embedding = None
+        try:
+            from .embeddings import embed_text
+            summary_embedding = embed_text(summary_text)
+        except Exception as e:
+            logger.warning(f"Failed to embed summary: {e}")
 
-        self.db.mark_processed(queue_item["id"], session_id=session_id)
-        print(f"    Stored: {title} ({total_words}w)")
+        # Store in database with transaction (wrap store_session + mark_processed atomically)
+        try:
+            session_id = self.db.store_session(
+                transcript_id=path.stem,
+                date=session_date.strftime("%Y-%m-%d"),
+                title=title,
+                summary=summary_text,
+                header=header,
+                compressed_50=note_result.get("note_content", ""),
+                metadata=metadata_json,
+                source_path=str(path),
+                message_count=len(messages),
+                word_count=total_words,
+                human_word_count=human_words,
+                note_content=note_result.get("note_content", ""),
+                tags=note_result.get("tags", "[]"),
+                mood=note_result.get("mood", ""),
+                continuity=note_result.get("continuity", 5),
+                summary_embedding=summary_embedding,
+            )
+            self.db.mark_processed(queue_item["id"], session_id=session_id)
+            logger.info(f"Stored session: {title} ({total_words}w, session_id={session_id})")
+        except Exception as e:
+            logger.error(f"Failed to store session: {e}")
+            raise
 
         # Step 5: KG extraction from session summary
         try:
@@ -316,10 +330,10 @@ class TranscriptProcessor:
                 db=self.db,
             )
             if kg_result["entities_added"] or kg_result["relationships_added"]:
-                print(f"    KG: +{kg_result['entities_added']} entities, "
-                      f"+{kg_result['relationships_added']} relationships")
+                logger.info(f"KG: +{kg_result['entities_added']} entities, "
+                           f"+{kg_result['relationships_added']} relationships")
         except Exception as e:
-            print(f"    KG extraction error: {e}")
+            logger.warning(f"KG extraction error: {e}")
 
     # ── Apple Foundation Model (headers only) ───────────────
 
@@ -399,69 +413,7 @@ class TranscriptProcessor:
 
         return metadata
 
-    # ── Transcript Extraction ─────────────────────────────────
-
-    def _extract_conversation(self, jsonl_path: Path) -> list[dict]:
-        messages = []
-        with open(jsonl_path) as f:
-            for line in f:
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-
-                if entry.get("type") not in ("user", "assistant"):
-                    continue
-
-                msg = entry.get("message", {})
-                role = msg.get("role", "")
-                content = msg.get("content")
-                if not content:
-                    continue
-
-                if isinstance(content, str):
-                    if content.startswith("You are"):
-                        continue
-                    text = self._clean_text(content)
-                    if text:
-                        messages.append({"role": role, "text": text[:2000]})
-
-                elif isinstance(content, list):
-                    for block in content:
-                        if block.get("type") == "text":
-                            text = self._clean_text(block.get("text", ""))
-                            if text and len(text) > 5:
-                                messages.append({"role": role, "text": text[:2000]})
-                        elif block.get("type") == "tool_result":
-                            result_content = block.get("content", "")
-                            if isinstance(result_content, str) and "[Signal from" in result_content:
-                                text = self._clean_text(self._clean_signal(result_content))
-                                if text:
-                                    messages.append({"role": "user", "text": text[:2000]})
-
-        return messages
-
-    def _clean_text(self, text: str) -> str:
-        text = re.sub(r'<system-reminder>.*?</system-reminder>', '', text, flags=re.DOTALL)
-        # Strip observation XML blocks (from Memorable hooks)
-        text = re.sub(r'<observation>.*?</observation>', '', text, flags=re.DOTALL)
-        # Strip PROGRESS SUMMARY blocks
-        text = re.sub(r'PROGRESS SUMMARY[:\s].*?(?=\n\n|\Z)', '', text, flags=re.DOTALL)
-        # Strip Read tool line number prefixes (e.g. "   165→ ")
-        text = re.sub(r'^\s*\d+→\s?', '', text, flags=re.MULTILINE)
-        text = self._clean_signal(text)
-        return text.strip()
-
-    def _clean_signal(self, text: str) -> str:
-        match = re.search(r'\[Signal from \w+[^\]]*\]\s*(.+)', text, re.DOTALL)
-        return match.group(1).strip() if match else text
-
-    def _format_conversation(self, messages: list[dict]) -> str:
-        lines = []
-        for msg in messages:
-            role = "User" if msg["role"] == "user" else "Claude"
-            lines.append(f"**{role}:** {msg['text'][:500]}")
-        return "\n\n".join(lines)
+    # ── Transcript Extraction (moved to notes.py) ────────────────
 
     def _extract_title(self, messages: list[dict]) -> str:
         """Build a title from the first few substantive human messages."""

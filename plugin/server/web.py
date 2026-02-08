@@ -59,10 +59,12 @@ class MemorableHandler(BaseHTTPRequestHandler):
 
         routes = {
             "/": self._serve_viewer,
+            "/health": self._health,
             "/api/stats": self._api_stats,
             "/api/sessions": self._api_sessions,
             "/api/session": self._api_session_detail,
             "/api/session/related": self._api_session_related,
+            "/api/session/notes": self._api_session_notes,
             "/api/timeline": self._api_timeline,
             "/api/observations": self._api_observations,
             "/api/prompts": self._api_prompts,
@@ -83,6 +85,27 @@ class MemorableHandler(BaseHTTPRequestHandler):
 
     def _serve_viewer(self, params):
         self._serve_file(UI_DIR / "viewer.html")
+
+    def _health(self, params):
+        """GET /health — health check endpoint for monitoring."""
+        try:
+            stats = db.get_stats()
+            # Get last processed time from processing queue
+            last_processed = db._query(lambda conn: conn.execute(
+                "SELECT MAX(updated_at) as last_proc FROM processing_queue WHERE status = 'completed'"
+            ).fetchone()[0])
+
+            self._json_response({
+                "db_connected": True,
+                "session_count": stats.get("sessions", 0),
+                "last_processed_at": last_processed,
+                "queue_depth": stats.get("pending_transcripts", 0),
+            })
+        except Exception as e:
+            self._json_response({
+                "db_connected": False,
+                "error": str(e),
+            }, 503)
 
     def _serve_static(self, path):
         """Serve static files from ui/ directory. Returns True if served."""
@@ -142,6 +165,25 @@ class MemorableHandler(BaseHTTPRequestHandler):
             "session": session,
             "observations": obs,
             "prompts": prompts,
+        })
+
+    def _api_session_notes(self, params):
+        """GET /api/session/notes?id=TRANSCRIPT_ID — get structured session note."""
+        tid = params.get("id", [None])[0]
+        if not tid:
+            self._json_response({"error": "missing ?id= parameter"}, 400)
+            return
+        session = db.get_session_by_transcript_id(tid)
+        if not session:
+            self._json_response({"error": "session not found"}, 404)
+            return
+        # note_content contains the full markdown from the notes pipeline
+        note_content = session.get("note_content", "")
+        self._json_response({
+            "transcript_id": tid,
+            "title": session.get("title", ""),
+            "note_content": note_content,
+            "compressed_50": session.get("compressed_50", ""),
         })
 
     def _api_timeline(self, params):

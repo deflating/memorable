@@ -5,10 +5,11 @@ keeps a local SQLite file that syncs with a central sqld server.
 When sync_url is not configured, falls back to plain local SQLite.
 
 Stores: sessions (with compressed transcripts), knowledge graph
-(entities + relationships), context seeds, and processing queue.
+(entities + relationships), and processing queue.
 """
 
 import json
+import logging
 import time
 from pathlib import Path
 
@@ -19,6 +20,7 @@ except ImportError:
     HAS_LIBSQL = False
 
 DEFAULT_DB_PATH = Path.home() / ".memorable" / "memorable.db"
+logger = logging.getLogger(__name__)
 
 
 def _rows_to_dicts(cursor) -> list[dict]:
@@ -55,18 +57,22 @@ class MemorableDB:
                 if self.auth_token:
                     kwargs["auth_token"] = self.auth_token
                 conn = libsql.connect(str(self.db_path), **kwargs)
+                # Set busy timeout for both libsql and sqlite3
+                conn.execute("PRAGMA busy_timeout = 10000")
                 return conn
-            except (ValueError, Exception):
+            except (ValueError, Exception) as e:
                 # Sync server unreachable — fall back to local-only
-                pass
+                logger.warning(f"LibSQL sync unavailable, falling back to local: {e}")
         if HAS_LIBSQL:
             conn = libsql.connect(str(self.db_path))
+            conn.execute("PRAGMA busy_timeout = 10000")
         else:
             import sqlite3
-            conn = sqlite3.connect(str(self.db_path))
+            conn = sqlite3.connect(str(self.db_path), timeout=10.0)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("PRAGMA busy_timeout = 10000")
         return conn
 
     def _sync(self, conn):
@@ -115,17 +121,18 @@ class MemorableDB:
                       metadata: str = "{}",
                       note_content: str = "",
                       tags: str = "[]", mood: str = "",
-                      continuity: int = 5) -> int:
+                      continuity: int = 5,
+                      summary_embedding: bytes | None = None) -> int:
         def do(conn):
             cur = conn.execute(
                 """INSERT INTO sessions
                    (transcript_id, date, title, summary, header, compressed_50,
                     metadata, source_path, message_count, word_count, human_word_count,
-                    note_content, tags, mood, continuity)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    note_content, tags, mood, continuity, summary_embedding)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (transcript_id, date, title, summary, header, compressed_50,
                  metadata, source_path, message_count, word_count, human_word_count,
-                 note_content, tags, mood, continuity)
+                 note_content, tags, mood, continuity, summary_embedding)
             )
             return cur.lastrowid
         return self._execute(do)
@@ -144,31 +151,43 @@ class MemorableDB:
             return _rows_to_dicts(cur)
         return self._query(do)
 
-    def get_recent_sessions(self, days: int = 5, limit: int = 20) -> list[dict]:
-        def do(conn):
-            cutoff = time.time() - (days * 86400)
-            cur = conn.execute(
-                """SELECT id, transcript_id, date, title, summary, header,
-                          message_count, word_count
-                   FROM sessions
-                   WHERE created_at > ?
-                   ORDER BY date DESC
-                   LIMIT ?""",
-                (cutoff, limit)
-            )
-            return _rows_to_dicts(cur)
-        return self._query(do)
+    def get_recent_sessions(self, days: int | None = None, limit: int = 20,
+                            include_metadata: bool = False,
+                            include_embedding: bool = False) -> list[dict]:
+        """Get recent sessions. If days is None, returns most recent without time filter.
 
-    def get_recent_summaries(self, limit: int = 10) -> list[dict]:
+        Args:
+            days: Filter to sessions from last N days. If None, no time filter.
+            limit: Max number of sessions to return.
+            include_metadata: Include the metadata JSON field.
+            include_embedding: Include the summary_embedding BLOB field.
+        """
         def do(conn):
-            cur = conn.execute(
-                """SELECT id, transcript_id, date, title, summary, header,
-                          message_count, word_count, metadata
-                   FROM sessions
-                   ORDER BY date DESC
-                   LIMIT ?""",
-                (limit,)
-            )
+            fields = """id, transcript_id, date, title, summary, header,
+                       message_count, word_count"""
+            if include_metadata:
+                fields += ", metadata"
+            if include_embedding:
+                fields += ", summary_embedding"
+
+            if days is not None:
+                cutoff = time.time() - (days * 86400)
+                cur = conn.execute(
+                    f"""SELECT {fields}
+                       FROM sessions
+                       WHERE created_at > ?
+                       ORDER BY date DESC
+                       LIMIT ?""",
+                    (cutoff, limit)
+                )
+            else:
+                cur = conn.execute(
+                    f"""SELECT {fields}
+                       FROM sessions
+                       ORDER BY date DESC
+                       LIMIT ?""",
+                    (limit,)
+                )
             return _rows_to_dicts(cur)
         return self._query(do)
 
@@ -359,28 +378,7 @@ class MemorableDB:
             return {"nodes": nodes, "edges": edges}
         return self._query(do)
 
-    # ── Context Seeds ─────────────────────────────────────────
-
-    def store_context_seed(self, session_id: str, seed_content: str,
-                           seed_type: str = "live") -> int:
-        def do(conn):
-            cur = conn.execute(
-                """INSERT INTO context_seeds (session_id, seed_content, seed_type)
-                   VALUES (?, ?, ?)""",
-                (session_id, seed_content, seed_type)
-            )
-            return cur.lastrowid
-        return self._execute(do)
-
-    def get_last_context_seed(self) -> dict | None:
-        def do(conn):
-            cur = conn.execute(
-                """SELECT session_id, seed_content, seed_type, created_at
-                   FROM context_seeds
-                   ORDER BY created_at DESC LIMIT 1"""
-            )
-            return _row_to_dict(cur)
-        return self._query(do)
+    # ── Context Seeds (table remains for backward compat, methods removed)
 
     # ── Processing Queue ──────────────────────────────────────
 
@@ -395,16 +393,39 @@ class MemorableDB:
             return cur.lastrowid
         return self._execute(do)
 
-    def get_pending_transcripts(self, limit: int = 10) -> list[dict]:
+    def get_pending_transcripts(self, limit: int = 10,
+                                 include_retry: bool = True,
+                                 retry_age_hours: int = 1) -> list[dict]:
+        """Get pending transcripts, optionally including error transcripts to retry.
+
+        Args:
+            limit: Max transcripts to return.
+            include_retry: If True, also return old error transcripts for retry.
+            retry_age_hours: Minimum age (in hours) before retrying an error transcript.
+        """
         def do(conn):
-            cur = conn.execute(
-                """SELECT id, transcript_path, file_hash
-                   FROM processing_queue
-                   WHERE status = 'pending'
-                   ORDER BY created_at ASC
-                   LIMIT ?""",
-                (limit,)
-            )
+            if include_retry:
+                retry_cutoff = time.time() - (retry_age_hours * 3600)
+                cur = conn.execute(
+                    """SELECT id, transcript_path, file_hash,
+                              COALESCE(retry_count, 0) as retry_count
+                       FROM processing_queue
+                       WHERE (status = 'pending')
+                          OR (status = 'error' AND processed_at < ? AND COALESCE(retry_count, 0) < 3)
+                       ORDER BY created_at ASC
+                       LIMIT ?""",
+                    (retry_cutoff, limit)
+                )
+            else:
+                cur = conn.execute(
+                    """SELECT id, transcript_path, file_hash,
+                              COALESCE(retry_count, 0) as retry_count
+                       FROM processing_queue
+                       WHERE status = 'pending'
+                       ORDER BY created_at ASC
+                       LIMIT ?""",
+                    (limit,)
+                )
             return _rows_to_dicts(cur)
         return self._query(do)
 
@@ -412,12 +433,22 @@ class MemorableDB:
                        error: str | None = None):
         status = "error" if error else "done"
         def do(conn):
-            conn.execute(
-                """UPDATE processing_queue
-                   SET status = ?, session_id = ?, error = ?, processed_at = ?
-                   WHERE id = ?""",
-                (status, session_id, error, time.time(), queue_id)
-            )
+            # Increment retry_count if this is an error
+            if error:
+                conn.execute(
+                    """UPDATE processing_queue
+                       SET status = ?, session_id = ?, error = ?, processed_at = ?,
+                           retry_count = COALESCE(retry_count, 0) + 1
+                       WHERE id = ?""",
+                    (status, session_id, error, time.time(), queue_id)
+                )
+            else:
+                conn.execute(
+                    """UPDATE processing_queue
+                       SET status = ?, session_id = ?, error = ?, processed_at = ?
+                       WHERE id = ?""",
+                    (status, session_id, error, time.time(), queue_id)
+                )
         self._execute(do)
 
     def is_transcript_processed(self, file_hash: str) -> bool:
@@ -531,13 +562,25 @@ class MemorableDB:
             return _rows_to_dicts(cur)
         return self._query(do)
 
-    def get_all_observation_texts(self, limit: int = 5000) -> list[dict]:
-        """Get id + title + summary for all observations (for semantic search)."""
+    def get_all_observations(self, limit: int = 5000,
+                             include_embeddings: bool = False) -> list[dict]:
+        """Get observations for semantic search.
+
+        Args:
+            limit: Max observations to return.
+            include_embeddings: If True, include the embedding BLOB field.
+        """
         def do(conn):
+            fields = """id, session_id, observation_type, title, summary,
+                       files, tool_name, created_at"""
+            if include_embeddings:
+                fields += ", embedding"
+
+            where_clause = "WHERE embedding IS NOT NULL" if include_embeddings else ""
             cur = conn.execute(
-                """SELECT id, session_id, observation_type, title, summary,
-                          files, tool_name, created_at
+                f"""SELECT {fields}
                    FROM observations
+                   {where_clause}
                    ORDER BY created_at DESC
                    LIMIT ?""",
                 (limit,)
@@ -936,15 +979,15 @@ class MemorableDB:
 
     # ── Semantic Search Support ──────────────────────────────
 
-    def get_all_observation_embeddings(self, limit: int = 5000) -> list[dict]:
-        """Get observations with their embeddings for semantic search."""
+    def get_sessions_with_embeddings(self, limit: int = 500) -> list[dict]:
+        """Get sessions with pre-computed summary embeddings for search."""
         def do(conn):
             cur = conn.execute(
-                """SELECT id, session_id, observation_type, title, summary,
-                          files, tool_name, created_at, embedding
-                   FROM observations
-                   WHERE embedding IS NOT NULL
-                   ORDER BY created_at DESC
+                """SELECT id, transcript_id, date, title, summary, header,
+                          message_count, word_count, summary_embedding
+                   FROM sessions
+                   WHERE summary_embedding IS NOT NULL
+                   ORDER BY date DESC
                    LIMIT ?""",
                 (limit,)
             )
@@ -1018,6 +1061,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     message_count INTEGER DEFAULT 0,
     word_count INTEGER DEFAULT 0,
     human_word_count INTEGER DEFAULT 0,
+    summary_embedding BLOB,
+    note_content TEXT DEFAULT '',
+    tags TEXT DEFAULT '[]',
+    mood TEXT DEFAULT '',
+    continuity INTEGER DEFAULT 5,
     created_at REAL DEFAULT (unixepoch('now'))
 );
 
@@ -1068,6 +1116,7 @@ CREATE TABLE IF NOT EXISTS processing_queue (
     status TEXT DEFAULT 'pending',
     session_id INTEGER REFERENCES sessions(id),
     error TEXT,
+    retry_count INTEGER DEFAULT 0,
     created_at REAL DEFAULT (unixepoch('now')),
     processed_at REAL
 );

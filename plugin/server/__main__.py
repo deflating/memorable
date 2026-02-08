@@ -9,6 +9,8 @@ Usage:
 """
 
 import argparse
+import logging
+import logging.handlers
 import sys
 from pathlib import Path
 
@@ -17,7 +19,41 @@ from .mcp_server import MemorableMCP
 from .db import MemorableDB
 
 
+def _setup_logging():
+    """Configure logging to both stderr and file with rotation."""
+    log_dir = Path.home() / ".memorable"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "memorable.log"
+
+    logger = logging.getLogger("server")
+    logger.setLevel(logging.INFO)
+
+    # File handler with rotation (10MB max, 3 backups)
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_file, maxBytes=10*1024*1024, backupCount=3
+    )
+    file_handler.setLevel(logging.INFO)
+    file_formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    file_handler.setFormatter(file_formatter)
+
+    # Stderr handler for immediate feedback
+    console_handler = logging.StreamHandler(sys.stderr)
+    console_handler.setLevel(logging.WARNING)
+    console_formatter = logging.Formatter("%(levelname)s: %(message)s")
+    console_handler.setFormatter(console_formatter)
+
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+
+    return logger
+
+
 def main():
+    _setup_logging()
+    logger = logging.getLogger("server")
+
     parser = argparse.ArgumentParser(description="Memorable MCP server")
     parser.add_argument("--watch", action="store_true",
                         help="Start transcript file watcher in background thread")
@@ -32,6 +68,7 @@ def main():
     args = parser.parse_args()
 
     config = Config(Path(args.config)) if args.config else Config()
+    logger.info(f"Starting Memorable with config from {config.config_path}")
 
     if args.init:
         _init(config)
