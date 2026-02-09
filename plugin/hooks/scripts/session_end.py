@@ -7,14 +7,12 @@ to ~/.memorable/data/notes/{machine_id}.jsonl.
 """
 
 import json
-import math
 import os
 import re
 import socket
 import sys
 import time
 import urllib.request
-import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -101,10 +99,10 @@ def parse_transcript(transcript_path: str) -> dict:
                         for block in content:
                             if isinstance(block, dict) and block.get("type") == "text":
                                 texts.append(block.get("text", ""))
-                    for text in texts:
+                    for text_item in texts:
                         clean = re.sub(
                             r'<system-reminder>.*?</system-reminder>',
-                            '', text, flags=re.DOTALL
+                            '', text_item, flags=re.DOTALL
                         ).strip()
                         if clean and len(clean) > 3:
                             messages.append({"role": "user", "text": clean[:2000]})
@@ -154,8 +152,9 @@ def build_llm_prompt(parsed: dict, session_id: str) -> str:
     parts = []
     parts.append("# Session Transcript\n")
 
+    user_name = get_config().get("user_name", "User")
     for msg in parsed["messages"]:
-        role = "Matt" if msg["role"] == "user" else "Claude"
+        role = user_name if msg["role"] == "user" else "Claude"
         text = msg["text"]
         if msg["role"] == "assistant" and len(text) > 500:
             text = text[:500] + "..."

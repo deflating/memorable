@@ -22,7 +22,7 @@ def main():
         lines = [
             "[Memorable] Context compaction incoming.",
             f"After compaction, re-establish context by reading anchors in {anchors_dir}/",
-            "Also re-read seed files: ~/.memorable/data/seeds/matt.md, claude.md, now.md",
+            "Also re-read seed files in ~/.memorable/data/seeds/ (all .md files there)",
         ]
         print("\n".join(lines))
 

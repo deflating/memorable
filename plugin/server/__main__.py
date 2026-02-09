@@ -5,13 +5,11 @@ Usage:
     python -m server              # Same as --mcp (default)
 """
 
-import argparse
 import logging
 import logging.handlers
 import sys
 from pathlib import Path
 
-from .config import Config
 from .mcp_server import MemorableMCP
 
 
@@ -48,17 +46,9 @@ def main():
     _setup_logging()
     logger = logging.getLogger("server")
 
-    parser = argparse.ArgumentParser(description="Memorable MCP server")
-    parser.add_argument("--mcp", action="store_true", default=True,
-                        help="Run as MCP server over stdio (default)")
-    parser.add_argument("--config", type=str, default=None,
-                        help="Path to config file")
-    args = parser.parse_args()
+    logger.info("Starting Memorable MCP server")
 
-    config = Config(Path(args.config)) if args.config else Config()
-    logger.info(f"Starting Memorable MCP server")
-
-    server = MemorableMCP(config)
+    server = MemorableMCP()
     server.run()
 
 

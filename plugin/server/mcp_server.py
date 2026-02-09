@@ -13,7 +13,6 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .config import Config
 
 DATA_DIR = Path.home() / ".memorable" / "data"
 SEEDS_DIR = DATA_DIR / "seeds"
@@ -43,8 +42,8 @@ def _valid_seed_files() -> set[str]:
 class MemorableMCP:
     """Handles MCP JSON-RPC protocol over stdio."""
 
-    def __init__(self, config: Config | None = None):
-        self.config = config or Config()
+    def __init__(self):
+        pass
 
     def run(self):
         """Main loop: read JSON-RPC from stdin, write responses to stdout."""
