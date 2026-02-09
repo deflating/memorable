@@ -2,7 +2,7 @@
 """Memorable background daemon.
 
 Watches Claude Code session transcripts in real-time and:
-1. Every human message: checks for relevance against knowledge graph
+1. Every few messages: checks conversation chunk for relevance against knowledge graph
 2. On relevance hit: writes a context hint for hooks to inject
 
 Usage:
@@ -19,7 +19,6 @@ from pathlib import Path
 
 from transcript_watcher import watch_transcripts
 from inference import InferenceClient
-from knowledge_graph import build_knowledge_graph, load_topic_index
 
 logger = logging.getLogger(__name__)
 
@@ -31,17 +30,17 @@ MACHINE_ID = socket.gethostname()
 
 # --- Prompts ---
 
-RELEVANCE_SYSTEM = "You check if a message connects to any known topics. Be concise."
+RELEVANCE_SYSTEM = "You check if a conversation connects to any past sessions. Be concise."
 
-RELEVANCE_PROMPT = """A human just sent this message in a conversation with an AI assistant:
+RELEVANCE_PROMPT = """Here is a recent exchange between a human and an AI assistant:
 
-"{message}"
+{conversation}
 
-Here are topics from their recent history. Each has an address (file:line) for retrieval:
+Here are summaries of their past sessions. Each has an address (file:line) for retrieval:
 
-{topics}
+{sessions}
 
-Does this message clearly relate to any of these topics? Consider:
+Does this conversation clearly relate to any of these past sessions? Consider:
 - Same subject being revisited
 - A decision being reconsidered
 - A person mentioned before
@@ -69,44 +68,45 @@ class MemorableDaemon:
         self.client = client
         self.enable_relevance = enable_relevance
 
-        # Knowledge graph / topic index (loaded once, refreshed periodically)
-        self._topic_index: str = ""
-        self._topic_index_loaded_at: float = 0
+        # Session index (loaded once, refreshed periodically)
+        self._session_index: str = ""
+        self._session_index_loaded_at: float = 0
 
-        self._load_topic_index()
+        self._load_session_index()
 
         # Ensure directories exist
         HINTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    def on_human_message(self, session_id: str, message: str):
-        """Called for every human message (for relevance checking)."""
-        if not self.enable_relevance or not self._topic_index:
+    def on_chunk(self, session_id: str, chunk):
+        """Called for each conversation chunk (human + assistant messages)."""
+        if not self.enable_relevance or not self._session_index:
             return
 
-        # Refresh topic index every 10 minutes
-        if time.monotonic() - self._topic_index_loaded_at > 600:
-            self._load_topic_index()
+        # Refresh session index every 10 minutes
+        if time.monotonic() - self._session_index_loaded_at > 600:
+            self._load_session_index()
 
         try:
-            self._check_relevance(session_id, message)
+            self._check_relevance(session_id, chunk)
         except Exception:
             logger.exception("Relevance check failed for %s", session_id)
 
-    def _check_relevance(self, session_id: str, message: str):
-        """Check if a human message matches known topics.
+    def _check_relevance(self, session_id: str, chunk):
+        """Check if a conversation chunk matches known topics.
 
-        Sends every message directly to the 3B model with the full topic index.
-        The model decides whether there's a genuine connection.
+        Uses chunk.text() which includes both human and assistant messages,
+        giving much better signal than human messages alone.
         """
-        if len(message) < 10:
+        conversation = chunk.text(max_assistant_len=300)
+        if len(conversation) < 20:
             return
 
         prompt = RELEVANCE_PROMPT.format(
-            message=message[:500],
-            topics=self._topic_index,
+            conversation=conversation[:2000],
+            sessions=self._session_index,
         )
 
-        logger.info("Relevance check: session=%s msg=%s", session_id, message[:80])
+        logger.info("Relevance check: session=%s chunk=#%d (%d msgs)", session_id, chunk.chunk_number, len(chunk.messages))
 
         response = self.client.chat(
             prompt=prompt,
@@ -150,16 +150,69 @@ class MemorableDaemon:
 
         logger.info("Hint written: %s (%d addresses)", hint_file.name, len(addresses))
 
-    def _load_topic_index(self):
-        """Load topic index from knowledge graph for relevance matching."""
+    def _load_session_index(self, max_chars: int = 6000):
+        """Build a compact index of session note summaries for relevance matching.
+
+        Reads all session notes, extracts the first sentence of each summary,
+        deduplicates, and formats as an addressable list.
+        """
+        notes_dir = DATA_DIR / "notes"
+        if not notes_dir.exists():
+            self._session_index = ""
+            return
+
         try:
-            build_knowledge_graph()
-            self._topic_index = load_topic_index(max_topics=30)
-            self._topic_index_loaded_at = time.monotonic()
-            logger.info("Topic index loaded (%d chars)", len(self._topic_index))
+            all_notes = []
+            for f in sorted(notes_dir.glob("*.jsonl")):
+                for i, line in enumerate(f.read_text().splitlines()):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        n = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    n["_file"] = f.name
+                    n["_line"] = i
+                    all_notes.append(n)
+
+            # Newest first (by line number descending, since batch wrote in order)
+            all_notes.reverse()
+
+            # Build index: one line per note with address + summary
+            seen = set()
+            lines = []
+            total_chars = 0
+            for n in all_notes:
+                note = n.get("note", "")
+                # Extract first non-header line as summary
+                summary = ""
+                for text_line in note.split("\n"):
+                    text_line = text_line.strip()
+                    if text_line and not text_line.startswith("#") and not text_line.startswith("---"):
+                        summary = text_line[:150]
+                        break
+                if not summary:
+                    continue
+                # Deduplicate near-identical summaries
+                dedup_key = summary[:80]
+                if dedup_key in seen:
+                    continue
+                seen.add(dedup_key)
+
+                addr = f"{n['_file']}:{n['_line']}"
+                entry = f"{addr} {summary}"
+                if total_chars + len(entry) > max_chars:
+                    break
+                lines.append(entry)
+                total_chars += len(entry) + 1
+
+            self._session_index = "\n".join(lines)
+            self._session_index_loaded_at = time.monotonic()
+            logger.info("Session index loaded (%d notes, %d chars)", len(lines), len(self._session_index))
         except Exception:
-            logger.exception("Failed to build/load knowledge graph")
-            self._topic_index = ""
+            logger.exception("Failed to load session index")
+            self._session_index = ""
 
 
 def get_config() -> dict:
@@ -211,9 +264,9 @@ def main():
         logger.warning("Primary endpoint not reachable — will use fallback")
 
     watch_transcripts(
-        on_chunk=None,
-        on_human_message=daemon.on_human_message if not args.no_relevance else None,
-        chunk_every=15,
+        on_chunk=daemon.on_chunk if not args.no_relevance else None,
+        on_human_message=None,
+        chunk_every=3,
         idle_timeout=args.idle_timeout,
     )
 
