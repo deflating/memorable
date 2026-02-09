@@ -86,39 +86,15 @@ def _get_salient_notes(notes_dir: Path) -> list[tuple[float, dict]]:
 
 
 def _format_salient_notes(scored: list[tuple[float, dict]]) -> str:
-    """Format top notes into a compact text block for injection."""
+    """Format top notes as compact references (tags + date + session ID)."""
     parts = []
-    total_chars = 0
     for score, entry in scored[:MAX_SALIENT_NOTES]:
-        note = entry.get("note", "")
-        # Extract just the Summary section for compactness
-        summary = ""
-        for section_line in note.split("\n"):
-            if section_line.startswith("## Summary"):
-                # Grab everything until the next ## or end
-                idx = note.index(section_line) + len(section_line)
-                rest = note[idx:]
-                end = rest.find("\n## ")
-                summary = rest[:end].strip() if end != -1 else rest.strip()
-                break
-
-        if not summary:
-            # Fallback: first 200 chars of note
-            summary = note[:200].strip()
-
         tags = entry.get("topic_tags", [])
-        tag_str = ", ".join(tags) if tags else ""
-        ts = entry.get("first_ts", entry.get("ts", ""))[:10]  # just the date
+        tag_str = ", ".join(tags) if tags else "untagged"
+        ts = entry.get("first_ts", entry.get("ts", ""))[:10]
+        sid = entry.get("session", "")[:8]
 
-        line = f"[{ts} | salience:{score:.2f}]"
-        if tag_str:
-            line += f" ({tag_str})"
-        line += f" {summary[:300]}"
-
-        if total_chars + len(line) > MAX_SALIENT_CHARS:
-            break
-        parts.append(line)
-        total_chars += len(line)
+        parts.append(f"  {ts} [{tag_str}] salience:{score:.2f} session:{sid}")
 
     return "\n".join(parts)
 
@@ -161,17 +137,16 @@ def main():
         lines.append("")
         lines.append("Do NOT skip this. Do NOT respond before reading these files.")
 
-        # Add salient session notes
+        # Add salient session note references
         notes_dir = DATA_DIR / "notes"
         if notes_dir.exists():
             scored = _get_salient_notes(notes_dir)
             if scored:
                 salient_text = _format_salient_notes(scored)
                 lines.append("")
-                lines.append(f"[Memorable] Top session notes by salience (from {len(scored)} total):")
+                lines.append(f"[Memorable] Most salient session notes ({len(scored)} total in {notes_dir}/):")
                 lines.append(salient_text)
-                lines.append("")
-                lines.append(f"For deeper search, grep {notes_dir}/ by keyword.")
+                lines.append(f"To read a note: grep {notes_dir}/ for its session ID. To search by topic: grep by keyword.")
 
         print("\n".join(lines))
 
