@@ -164,12 +164,6 @@ header h1 {
   overflow: hidden;
 }
 
-.note-expanded {
-  background: var(--bg-inset);
-  border-radius: var(--radius-sm);
-  padding: 16px;
-}
-
 /* Tag pills */
 .tag {
   display: inline-block;
@@ -190,6 +184,36 @@ header h1 {
 .ew-5 { border-left-color: #c25a28; }
 .ew-6 { border-left-color: #a03020; }
 .ew-7 { border-left-color: #7b1818; }
+
+/* Device tabs */
+.device-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.device-tab {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 4px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: transparent;
+  transition: all 0.15s;
+}
+
+.device-tab:hover {
+  background: var(--bg-inset);
+  color: var(--text);
+}
+
+.device-tab.active {
+  background: var(--bg-header);
+  color: var(--text-on-dark);
+  border-color: var(--bg-header);
+}
 
 /* Filter bar */
 .filter-bar {
@@ -257,11 +281,6 @@ header h1 {
   display: flex;
   flex-direction: column;
   gap: 16px;
-}
-
-.tag.decision-tag {
-  background: var(--accent-sage-light);
-  color: var(--accent-sage);
 }
 
 .seed-card {
@@ -431,52 +450,6 @@ textarea.seed-editor:focus { border-color: var(--accent); }
   border-top: 1px solid var(--border-subtle);
 }
 
-/* Salience tab */
-.stat-cards {
-  display: flex;
-  gap: 16px;
-  margin-bottom: 24px;
-  flex-wrap: wrap;
-}
-
-.stat-card {
-  flex: 1;
-  min-width: 120px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 16px;
-  text-align: center;
-  box-shadow: var(--shadow);
-}
-
-.stat-number {
-  font-size: 28px;
-  font-weight: 700;
-  color: var(--accent);
-}
-
-.stat-label {
-  font-size: 12px;
-  color: var(--text-muted);
-  margin-top: 4px;
-}
-
-.chart-container {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 20px;
-  margin-bottom: 16px;
-  box-shadow: var(--shadow);
-}
-
-.chart-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
-}
-
 /* Markdown rendering */
 .rendered-md h1 { display: none; }
 .rendered-md h2 { font-size: 16px; color: var(--accent); margin: 20px 0 8px; font-weight: 600; }
@@ -545,7 +518,5 @@ mark {
 
 /* Responsive */
 @media (max-width: 900px) {
-  .stat-cards { flex-direction: column; }
-  .chart-row { grid-template-columns: 1fr; }
   #app { padding: 0 16px; }
 }

@@ -257,6 +257,7 @@ class _TranscriptHandler(FileSystemEventHandler):
         self,
         on_chunk: Callable[[str, TranscriptChunk], None],
         on_human_message: Optional[Callable[[str, str], None]] = None,
+        on_session_idle: Optional[Callable[[str, str, int], None]] = None,
         chunk_every: int = 15,
         idle_timeout: float = 300.0,
         skip_existing: bool = True,
@@ -264,6 +265,7 @@ class _TranscriptHandler(FileSystemEventHandler):
         super().__init__()
         self.on_chunk = on_chunk
         self.on_human_message = on_human_message
+        self.on_session_idle = on_session_idle
         self.chunk_every = chunk_every
         self.idle_timeout = idle_timeout
         self.skip_existing = skip_existing
@@ -331,10 +333,11 @@ class _TranscriptHandler(FileSystemEventHandler):
                     logger.exception("Error in on_human_message for %s", session_id)
 
         for chunk in chunks:
-            try:
-                self.on_chunk(chunk.session_id, chunk)
-            except Exception:
-                logger.exception("Error in on_chunk callback for %s", chunk.session_id)
+            if self.on_chunk:
+                try:
+                    self.on_chunk(chunk.session_id, chunk)
+                except Exception:
+                    logger.exception("Error in on_chunk callback for %s", chunk.session_id)
 
     def check_idle_sessions(self):
         """Flush and clean up sessions that have gone quiet."""
@@ -349,15 +352,26 @@ class _TranscriptHandler(FileSystemEventHandler):
             chunker = self._chunkers.get(path)
             if chunker:
                 chunk = chunker.flush()
-                if chunk:
+                if chunk and self.on_chunk:
                     try:
                         self.on_chunk(chunk.session_id, chunk)
                     except Exception:
                         logger.exception("Error flushing chunk for %s", chunker.session_id)
-                    logger.info(
-                        "Session idle, flushed final chunk: %s (%d total human msgs)",
-                        chunker.session_id, chunker.total_human_count,
-                    )
+
+                session_id = chunker.session_id
+                total = chunker.total_human_count
+                logger.info(
+                    "Session idle, flushed: %s (%d total human msgs)",
+                    session_id, total,
+                )
+
+                # Notify daemon that this session is idle (for note generation)
+                if self.on_session_idle:
+                    try:
+                        self.on_session_idle(session_id, path, total)
+                    except Exception:
+                        logger.exception("Error in on_session_idle for %s", session_id)
+
                 del self._chunkers[path]
             del self._last_activity[path]
 
@@ -369,6 +383,7 @@ class _TranscriptHandler(FileSystemEventHandler):
 def watch_transcripts(
     on_chunk: Callable[[str, TranscriptChunk], None],
     on_human_message: Optional[Callable[[str, str], None]] = None,
+    on_session_idle: Optional[Callable[[str, str, int], None]] = None,
     chunk_every: int = 15,
     idle_timeout: float = 300.0,
     idle_check_interval: float = 60.0,
@@ -382,6 +397,9 @@ def watch_transcripts(
         on_human_message: Called with (session_id, message_text) for every
                           new human message. Use for per-message processing
                           like relevance checking.
+        on_session_idle: Called with (session_id, transcript_path, human_count)
+                         when a session goes idle. Use for end-of-session
+                         processing like note generation.
         chunk_every: Number of human messages per chunk (default 15).
         idle_timeout: Seconds of inactivity before flushing remaining
                       messages as a final chunk (default 300).
@@ -397,6 +415,7 @@ def watch_transcripts(
     handler = _TranscriptHandler(
         on_chunk=on_chunk,
         on_human_message=on_human_message,
+        on_session_idle=on_session_idle,
         chunk_every=chunk_every,
         idle_timeout=idle_timeout,
     )

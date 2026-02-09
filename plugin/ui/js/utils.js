@@ -56,10 +56,6 @@ export function formatTime(isoStr) {
   return h + ':' + m + ampm;
 }
 
-export function formatDateTime(isoStr) {
-  return formatDate(isoStr) + ' ' + formatTime(isoStr);
-}
-
 // Markdown rendering (via marked.js CDN)
 export function renderMarkdown(text) {
   if (!text) return '';
@@ -112,12 +108,3 @@ export function ewClass(ew) {
   return 'ew-7';
 }
 
-// Emotional weight color (for charts)
-export function ewColor(ew) {
-  if (ew >= 0.7) return '#7b1818';
-  if (ew >= 0.6) return '#a03020';
-  if (ew >= 0.5) return '#c25a28';
-  if (ew >= 0.4) return '#b8860b';
-  if (ew >= 0.3) return '#8b7355';
-  return '#a09588';
-}

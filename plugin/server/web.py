@@ -6,7 +6,6 @@ Uses only Python stdlib. No external dependencies.
 
 import argparse
 import json
-import os
 import shutil
 from datetime import datetime, timezone
 from http.server import HTTPServer, SimpleHTTPRequestHandler
@@ -158,14 +157,29 @@ def handle_put_seed(name, body):
     return 200, {"ok": True}
 
 
+def handle_get_machines():
+    """Return sorted list of unique machine names across notes and anchors."""
+    machines = set()
+    for machine, _ in load_jsonl_dir(NOTES_DIR):
+        machines.add(machine)
+    for machine, _ in load_jsonl_dir(ANCHORS_DIR):
+        machines.add(machine)
+    return 200, {"machines": sorted(machines)}
+
+
 def handle_get_notes(params):
     search = params.get("search", [""])[0].lower()
     tag_filter = params.get("tag", [""])[0].lower()
+    machine_filter = params.get("machine", [""])[0]
     sort_by = params.get("sort", ["date"])[0]
     limit = int(params.get("limit", ["50"])[0])
     offset = int(params.get("offset", ["0"])[0])
 
     notes = load_all_notes()
+
+    # Filter by machine
+    if machine_filter:
+        notes = [n for n in notes if n.get("machine") == machine_filter]
 
     # Filter by search query
     if search:
@@ -216,37 +230,15 @@ def handle_get_notes_tags():
 
 def handle_get_anchors(params):
     session_filter = params.get("session", [""])[0]
+    machine_filter = params.get("machine", [""])[0]
     anchors = load_all_anchors()
 
+    if machine_filter:
+        anchors = [a for a in anchors if a.get("machine") == machine_filter]
     if session_filter:
         anchors = [a for a in anchors if a.get("session") == session_filter]
 
     return 200, {"anchors": anchors, "total": len(anchors)}
-
-
-def handle_get_salience():
-    notes = load_all_notes()
-    points = []
-    for n in notes:
-        ts = n.get("first_ts", n.get("ts", ""))
-        try:
-            ts_clean = str(ts).replace("Z", "+00:00")
-            dt = datetime.fromisoformat(ts_clean)
-            date_str = dt.strftime("%Y-%m-%d")
-        except (ValueError, TypeError):
-            date_str = ""
-
-        points.append({
-            "date": date_str,
-            "salience": n.get("salience", 1.0),
-            "effective_salience": n.get("effective_salience", 0),
-            "emotional_weight": n.get("emotional_weight", 0.3),
-            "session": n.get("session", ""),
-            "tags": n.get("topic_tags", []),
-            "message_count": n.get("message_count", 0),
-        })
-
-    return 200, {"points": points}
 
 
 def handle_get_stats():
@@ -344,6 +336,10 @@ class MemorableHandler(SimpleHTTPRequestHandler):
             status, data = handle_get_seeds()
             return self.send_json(status, data)
 
+        if path == "/api/machines":
+            status, data = handle_get_machines()
+            return self.send_json(status, data)
+
         if path == "/api/notes/tags":
             status, data = handle_get_notes_tags()
             return self.send_json(status, data)
@@ -354,10 +350,6 @@ class MemorableHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/anchors":
             status, data = handle_get_anchors(params)
-            return self.send_json(status, data)
-
-        if path == "/api/salience":
-            status, data = handle_get_salience()
             return self.send_json(status, data)
 
         if path == "/api/stats":

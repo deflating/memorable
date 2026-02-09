@@ -185,15 +185,18 @@ def main():
                 lines.append(salient_text)
                 lines.append(f"To read a note: grep {notes_dir}/ for its session ID. To search by topic: grep by keyword.")
 
-        # Add anchor reference for crash recovery
+        # Add anchor files — explicit read instructions, same as seeds
         anchors_dir = DATA_DIR / "anchors"
         if anchors_dir.exists():
-            anchors = _get_recent_anchors(anchors_dir)
-            if anchors:
-                session_id = anchors[0].get("session", "?")[:8]
+            anchor_files = sorted(anchors_dir.glob("*.jsonl"))
+            if anchor_files:
                 lines.append("")
-                lines.append(f"[Memorable] {len(anchors)} anchors from last session (session:{session_id}) in {anchors_dir}/")
-                lines.append("If context was lost or you're continuing previous work, grep the anchors dir for the session ID to see what was happening.")
+                lines.append("[Memorable] Read these anchor files for recent session context:")
+                lines.append("")
+                for af in anchor_files:
+                    lines.append(f"3. Read {af}")
+                lines.append("")
+                lines.append("Do NOT skip this. Anchors contain what was happening, which files were being edited, and what was decided.")
 
         print("\n".join(lines))
 

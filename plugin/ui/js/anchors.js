@@ -1,18 +1,66 @@
 import { api, formatDate, formatTime, el } from './utils.js';
 
-export async function render(container) {
-    let anchorsData;
+let currentMachine = '';
+let machines = [];
 
+async function fetchMachines() {
     try {
-        const data = await api('/api/anchors');
+        const data = await api('/api/machines');
+        machines = data.machines || [];
+    } catch {
+        machines = [];
+    }
+}
+
+function renderDeviceTabs(container, onSwitch) {
+    if (machines.length <= 1) return;
+    const bar = el('div', 'device-tabs');
+
+    const allTab = el('span', currentMachine === '' ? 'device-tab active' : 'device-tab');
+    allTab.textContent = 'All';
+    allTab.addEventListener('click', () => { currentMachine = ''; onSwitch(); });
+    bar.appendChild(allTab);
+
+    for (const m of machines) {
+        const shortName = m.split('.')[0];
+        const tab = el('span', currentMachine === m ? 'device-tab active' : 'device-tab');
+        tab.textContent = shortName;
+        tab.addEventListener('click', () => { currentMachine = m; onSwitch(); });
+        bar.appendChild(tab);
+    }
+
+    container.appendChild(bar);
+}
+
+export async function render(container) {
+    currentMachine = '';
+    await fetchMachines();
+    renderPage(container);
+}
+
+async function renderPage(container) {
+    container.innerHTML = '';
+    renderDeviceTabs(container, () => {
+        renderPage(container);
+    });
+    await renderAnchors(container);
+}
+
+async function renderAnchors(container) {
+    const params = new URLSearchParams();
+    if (currentMachine) params.set('machine', currentMachine);
+
+    let anchorsData;
+    try {
+        const data = await api('/api/anchors?' + params);
         anchorsData = data.anchors || [];
     } catch (err) {
-        container.innerHTML = '<div class="empty-state">Failed to load anchors: ' + err.message + '</div>';
+        container.innerHTML += '<div class="empty-state">Failed to load anchors: ' + err.message + '</div>';
         return;
     }
 
     if (anchorsData.length === 0) {
-        container.innerHTML = '<div class="empty-state">No anchors yet. The daemon generates these during sessions.</div>';
+        container.appendChild(el('div', { className: 'empty-state', textContent: 'No anchors yet. The daemon generates these during sessions.' }));
         return;
     }
 

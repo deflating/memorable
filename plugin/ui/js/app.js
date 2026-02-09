@@ -2,14 +2,12 @@ import { api, formatDate } from './utils.js';
 import { render as renderNotes } from './notes.js';
 import { render as renderAnchors } from './anchors.js';
 import { render as renderSeeds } from './seeds.js';
-import { render as renderSalience } from './salience.js';
 
 // Tab renderers keyed by hash name
 const tabs = {
   notes:    renderNotes,
   anchors:  renderAnchors,
   seeds:    renderSeeds,
-  salience: renderSalience,
 };
 
 let currentTab = 'notes';

@@ -3,12 +3,14 @@ import { api, formatDate, formatTime, renderMarkdown, stripMarkdown, debounce, e
 // Module state
 let notes = [];
 let tags = [];
+let machines = [];
 let total = 0;
 let offset = 0;
 let expandedId = null;
 let currentSearch = '';
 let currentTag = '';
 let currentSort = 'date';
+let currentMachine = '';
 
 // ---------------------------------------------------------------------------
 // Data fetching
@@ -22,6 +24,7 @@ async function fetchNotes(append = false) {
     });
     if (currentSearch) params.set('search', currentSearch);
     if (currentTag) params.set('tag', currentTag);
+    if (currentMachine) params.set('machine', currentMachine);
 
     const data = await api(`/api/notes?${params}`);
     total = data.total;
@@ -41,6 +44,15 @@ async function fetchTags() {
         tags = data.tags || [];
     } catch {
         tags = [];
+    }
+}
+
+async function fetchMachines() {
+    try {
+        const data = await api('/api/machines');
+        machines = data.machines || [];
+    } catch {
+        machines = [];
     }
 }
 
@@ -69,6 +81,26 @@ function truncate(text, len) {
 // ---------------------------------------------------------------------------
 // Filter bar
 // ---------------------------------------------------------------------------
+
+function renderDeviceTabs(container, onSwitch) {
+    if (machines.length <= 1) return;
+    const bar = el('div', 'device-tabs');
+
+    const allTab = el('span', currentMachine === '' ? 'device-tab active' : 'device-tab');
+    allTab.textContent = 'All';
+    allTab.addEventListener('click', () => { currentMachine = ''; onSwitch(); });
+    bar.appendChild(allTab);
+
+    for (const m of machines) {
+        const shortName = m.split('.')[0];
+        const tab = el('span', currentMachine === m ? 'device-tab active' : 'device-tab');
+        tab.textContent = shortName;
+        tab.addEventListener('click', () => { currentMachine = m; onSwitch(); });
+        bar.appendChild(tab);
+    }
+
+    container.appendChild(bar);
+}
 
 function renderFilterBar(container) {
     const bar = el('div', { className: 'filter-bar' });
@@ -340,42 +372,50 @@ function appendLoadMore(container) {
 // Public render
 // ---------------------------------------------------------------------------
 
-// Called from salience tag chart click-through
-export function setTagFilter(tagName) {
-    // Navigate to notes tab with tag filter
-    location.hash = '#notes';
-    currentTag = tagName;
-    currentSearch = '';
-    expandedId = null;
-    // Re-render will happen via hashchange -> app.js navigate
-}
-
 export async function render(container, state) {
     // Reset module state
     notes = [];
     tags = [];
+    machines = [];
     total = 0;
     offset = 0;
     expandedId = null;
     currentSearch = '';
     currentTag = '';
     currentSort = 'date';
+    currentMachine = '';
 
-    // Fetch tags
-    await fetchTags();
+    // Fetch tags + machines
+    await Promise.all([fetchTags(), fetchMachines()]);
 
-    // Build filter bar
+    await renderPage(container);
+}
+
+async function renderPage(container) {
+    container.innerHTML = '';
+
+    // Device tabs + filter bar
+    renderDeviceTabs(container, () => {
+        expandedId = null;
+        notes = [];
+        offset = 0;
+        fetchNotes().then(() => {
+            renderPage(container);
+        });
+    });
     renderFilterBar(container);
 
-    // Fetch initial notes
-    try {
-        await fetchNotes();
-    } catch (err) {
-        container.appendChild(el('div', {
-            className: 'empty',
-            innerHTML: `<h3>Failed to load notes</h3><p>${err.message}</p>`,
-        }));
-        return;
+    // Fetch initial notes if not already loaded
+    if (notes.length === 0) {
+        try {
+            await fetchNotes();
+        } catch (err) {
+            container.appendChild(el('div', {
+                className: 'empty',
+                innerHTML: `<h3>Failed to load notes</h3><p>${err.message}</p>`,
+            }));
+            return;
+        }
     }
 
     // Render note cards

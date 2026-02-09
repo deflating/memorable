@@ -15,7 +15,6 @@ Usage:
 import argparse
 import json
 import logging
-import re
 import shutil
 import socket
 import subprocess
@@ -24,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from transcript_watcher import watch_transcripts
+from note_generator import generate_note
 
 logger = logging.getLogger(__name__)
 
@@ -85,10 +85,11 @@ def extract_mechanical_metadata(chunk) -> dict:
 
 
 class MemorableDaemon:
-    """Main daemon that watches transcripts and generates AFM anchors."""
+    """Main daemon that watches transcripts and generates AFM anchors and session notes."""
 
-    def __init__(self, enable_anchors: bool = True):
+    def __init__(self, enable_anchors: bool = True, enable_notes: bool = True):
         self.enable_anchors = enable_anchors
+        self.enable_notes = enable_notes
         ANCHORS_DIR.mkdir(parents=True, exist_ok=True)
 
     def on_chunk(self, session_id: str, chunk):
@@ -163,10 +164,36 @@ class MemorableDaemon:
 
         logger.info("Anchor written: %s", afm_fields["summary"][:80])
 
+    def on_session_idle(self, session_id: str, transcript_path: str, human_count: int):
+        """Called when a session goes idle. Generates a session note via LLM."""
+        if not self.enable_notes:
+            return
+
+        # Skip subagent transcripts (session_id contains '/')
+        if "/" in session_id:
+            logger.debug("Skipping subagent session: %s", session_id)
+            return
+
+        if human_count < 3:
+            logger.info("Session %s too short (%d msgs), skipping note", session_id, human_count)
+            return
+
+        logger.info("Generating note for idle session %s (%d human msgs)", session_id, human_count)
+
+        try:
+            success = generate_note(session_id, transcript_path, machine_id=MACHINE_ID)
+            if success:
+                logger.info("Note generated for session %s", session_id)
+            else:
+                logger.info("Note generation skipped for session %s", session_id)
+        except Exception:
+            logger.exception("Note generation failed for session %s", session_id)
+
 
 def main():
     parser = argparse.ArgumentParser(description="Memorable background daemon")
     parser.add_argument("--no-anchors", action="store_true", help="Disable AFM anchor generation")
+    parser.add_argument("--no-notes", action="store_true", help="Disable session note generation")
     parser.add_argument("--idle-timeout", type=float, default=300.0, help="Seconds before flushing idle session")
     parser.add_argument("--log-level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     args = parser.parse_args()
@@ -177,16 +204,21 @@ def main():
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    daemon = MemorableDaemon(enable_anchors=not args.no_anchors)
+    daemon = MemorableDaemon(
+        enable_anchors=not args.no_anchors,
+        enable_notes=not args.no_notes,
+    )
 
     logger.info("Memorable daemon starting")
     logger.info("  AFM: %s", AFM_BIN)
     logger.info("  Anchors: %s", "enabled" if not args.no_anchors else "disabled")
+    logger.info("  Notes: %s", "enabled" if not args.no_notes else "disabled")
     logger.info("  Machine: %s", MACHINE_ID)
 
     watch_transcripts(
         on_chunk=daemon.on_chunk if not args.no_anchors else None,
         on_human_message=None,
+        on_session_idle=daemon.on_session_idle,
         chunk_every=3,
         idle_timeout=args.idle_timeout,
     )
