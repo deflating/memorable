@@ -35,39 +35,16 @@ MACHINE_ID = socket.gethostname()
 
 AFM_BIN = shutil.which("afm") or "/opt/homebrew/bin/afm"
 
-AFM_SYSTEM = "You extract structured information from conversations. Output ONLY the filled template, nothing else."
+AFM_SYSTEM = "You are a conversation summarizer. Be concise."
 
-AFM_PROMPT = """Read this conversation excerpt. Fill in each field precisely.
-
-TOPIC: [Main subject, max 10 words]
-DOING: [Current task/action, max 10 words]
-NEXT: [What's about to happen next, or 'unclear']
-DECIDED: [Any choice made, or 'none']
-BLOCKED: [Any error or blocker stopping progress, or 'none']
-MOOD: [One word]
-UNRESOLVED: [Open question or unfinished item, or 'none']
-KEYWORDS: [5-8 important nouns/names from the messages, comma separated]
-QUOTE: [One significant sentence from the human, quoted exactly]
-
-Conversation:
-{chunk_text}"""
-
+# Multi-pass prompts — one focused question per AFM call
+AFM_PROMPTS = {
+    "summary": "Summarize this conversation in 2-3 sentences. Another AI will use this to re-establish context.\n\nConversation:\n{chunk_text}",
+    "decided": "Was anything decided or agreed upon in this conversation? Be concise.\n\nConversation:\n{chunk_text}",
+    "unresolved": "What is still unresolved or left open at the end of this conversation? Be concise.\n\nConversation:\n{chunk_text}",
+}
 
 FILE_TOOLS = {"Read", "Edit", "Write", "Glob", "Grep"}
-
-
-def parse_afm_output(text: str) -> dict:
-    """Parse AFM structured output into a dict."""
-    fields = {}
-    for label in ("TOPIC", "DOING", "NEXT", "DECIDED", "BLOCKED", "MOOD", "UNRESOLVED", "KEYWORDS", "QUOTE"):
-        match = re.search(rf'{label}:\s*(.+)', text)
-        if match:
-            value = match.group(1).strip()
-            if label == "KEYWORDS":
-                fields[label.lower()] = [k.strip() for k in value.split(",") if k.strip()]
-            else:
-                fields[label.lower()] = value
-    return fields
 
 
 def extract_mechanical_metadata(chunk) -> dict:
@@ -124,18 +101,8 @@ class MemorableDaemon:
         except Exception:
             logger.exception("Anchor generation failed for %s", session_id)
 
-    def _generate_anchor(self, session_id: str, chunk):
-        """Call AFM to extract a structured anchor from the chunk."""
-        conversation = chunk.text(max_assistant_len=300)
-        if len(conversation) < 20:
-            return
-
-        # Cap at ~2000 chars for AFM's 4K context limit
-        prompt = AFM_PROMPT.format(chunk_text=conversation[:2000])
-
-        logger.info("Anchor: session=%s chunk=#%d (%d msgs)",
-                     session_id, chunk.chunk_number, len(chunk.messages))
-
+    def _call_afm(self, prompt: str) -> str | None:
+        """Make a single AFM call. Returns response text or None on failure."""
         try:
             result = subprocess.run(
                 [AFM_BIN, "-s", prompt, "-i", AFM_SYSTEM],
@@ -143,23 +110,39 @@ class MemorableDaemon:
             )
             if result.returncode != 0:
                 logger.warning("AFM returned %d: %s", result.returncode, result.stderr[:200])
-                return
+                return None
             response = result.stdout.strip()
+            return response if response else None
         except subprocess.TimeoutExpired:
-            logger.warning("AFM timed out for session %s chunk #%d", session_id, chunk.chunk_number)
-            return
+            logger.warning("AFM timed out")
+            return None
         except FileNotFoundError:
             logger.error("AFM binary not found at %s", AFM_BIN)
+            return None
+
+    def _generate_anchor(self, session_id: str, chunk):
+        """Multi-pass AFM extraction + mechanical metadata."""
+        conversation = chunk.text(max_assistant_len=300)
+        if len(conversation) < 20:
             return
 
-        if not response:
-            return
+        # Cap at ~2000 chars for AFM's 4K context limit
+        chunk_text = conversation[:2000]
 
-        logger.debug("AFM response: %s", response[:300])
+        logger.info("Anchor: session=%s chunk=#%d (%d msgs)",
+                     session_id, chunk.chunk_number, len(chunk.messages))
 
-        fields = parse_afm_output(response)
-        if not fields.get("topic"):
-            logger.warning("AFM output missing TOPIC, skipping")
+        # Multi-pass AFM — one focused question per call
+        afm_fields = {}
+        for field_name, prompt_template in AFM_PROMPTS.items():
+            prompt = prompt_template.format(chunk_text=chunk_text)
+            response = self._call_afm(prompt)
+            if response:
+                afm_fields[field_name] = response
+                logger.debug("AFM %s: %s", field_name, response[:200])
+
+        if not afm_fields.get("summary"):
+            logger.warning("AFM summary failed, skipping anchor")
             return
 
         # Mechanical metadata — free, no AFM needed
@@ -169,7 +152,7 @@ class MemorableDaemon:
             "ts": datetime.now(timezone.utc).isoformat(),
             "session": session_id,
             "chunk": chunk.chunk_number,
-            **fields,
+            **afm_fields,
             **mechanical,
         }
 
@@ -178,7 +161,7 @@ class MemorableDaemon:
         with open(anchor_file, "a") as f:
             f.write(json.dumps(entry) + "\n")
 
-        logger.info("Anchor written: %s — %s", fields.get("topic", "?"), fields.get("doing", "?"))
+        logger.info("Anchor written: %s", afm_fields["summary"][:80])
 
 
 def main():
