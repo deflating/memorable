@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """UserPromptSubmit hook for Memorable.
 
-Captures user prompts by appending to ~/.memorable/data/prompts.jsonl.
-No database, no embedding — just fast file append.
+Captures user prompts to ~/.memorable/data/prompts/{machine_id}.jsonl.
+Counts messages per session and emits anchor reminders every 15 messages.
 """
 
 import json
 import re
+import socket
 import sys
 import time
 from datetime import datetime, timezone
@@ -14,6 +15,23 @@ from pathlib import Path
 
 
 DATA_DIR = Path.home() / ".memorable" / "data"
+COUNTER_DIR = DATA_DIR / ".session_counts"
+ANCHOR_INTERVAL = 15
+
+
+def get_machine_id() -> str:
+    """Read machine_id from config, fall back to hostname."""
+    config_path = Path.home() / ".memorable" / "config.json"
+    try:
+        if config_path.exists():
+            with open(config_path) as f:
+                cfg = json.load(f)
+            mid = cfg.get("machine_id")
+            if mid:
+                return mid
+    except Exception:
+        pass
+    return socket.gethostname()
 
 
 def main():
@@ -58,9 +76,12 @@ def main():
         ]):
             return
 
-        # Append to JSONL file
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        prompts_file = DATA_DIR / "prompts.jsonl"
+        machine_id = get_machine_id()
+
+        # Append to per-machine JSONL file
+        prompts_dir = DATA_DIR / "prompts"
+        prompts_dir.mkdir(parents=True, exist_ok=True)
+        prompts_file = prompts_dir / f"{machine_id}.jsonl"
 
         entry = {
             "ts": datetime.now(timezone.utc).isoformat(),
@@ -71,6 +92,37 @@ def main():
 
         with open(prompts_file, "a") as f:
             f.write(json.dumps(entry) + "\n")
+
+        # ── Message counter + anchor reminder ──────────────────
+
+        COUNTER_DIR.mkdir(parents=True, exist_ok=True)
+        # Sanitize session_id for filename
+        safe_session = re.sub(r'[^\w\-]', '_', session_id)
+        counter_file = COUNTER_DIR / f"{safe_session}.count"
+
+        # Read current count
+        count = 0
+        try:
+            if counter_file.exists():
+                count = int(counter_file.read_text().strip())
+        except (ValueError, OSError):
+            count = 0
+
+        count += 1
+
+        if count >= ANCHOR_INTERVAL:
+            # Reset counter
+            counter_file.write_text("0")
+            # Output anchor reminder to stdout
+            print(
+                "[Memorable] You've exchanged ~15 messages since your last anchor. "
+                "Please call the memorable_write_anchor tool now with a brief summary "
+                "of the conversation since the last anchor point. Include: what was "
+                "discussed, any decisions made, the current mood/energy, and any open threads."
+            )
+        else:
+            # Save updated count
+            counter_file.write_text(str(count))
 
     except Exception as e:
         try:

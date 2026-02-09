@@ -1,42 +1,148 @@
 #!/usr/bin/env python3
 """SessionStart hook for Memorable.
 
-Reads session JSON files directly from ~/.memorable/data/sessions/
-and injects context for Claude. No database required for startup.
+Reads seed files and recent anchors to inject startup context.
 
 Two layers:
-1. Recent sessions — last 3 sessions with full summaries
-2. Stats — one-line system status
+1. Seeds — identity, preferences, people, projects (from ~/.memorable/data/seeds/*.md)
+2. Anchors — recent in-session summaries (from ~/.memorable/data/anchors/*.jsonl)
 """
 
 import json
+import socket
 import sys
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 DATA_DIR = Path.home() / ".memorable" / "data"
-SESSIONS_DIR = DATA_DIR / "sessions"
+SEEDS_DIR = DATA_DIR / "seeds"
+ANCHORS_DIR = DATA_DIR / "anchors"
+CONFIG_PATH = Path.home() / ".memorable" / "config.json"
+
+# Rough token budget: seeds get priority, anchors fill the rest
+MAX_SEED_CHARS = 6000
+MAX_ANCHOR_CHARS = 6000
 
 
-def _read_recent_sessions(limit: int = 3) -> list[dict]:
-    """Read recent session JSON files, sorted by date descending."""
-    if not SESSIONS_DIR.exists():
-        return []
-    sessions = []
-    for f in sorted(SESSIONS_DIR.glob("*.json"), reverse=True):
+def _get_machine_id() -> str:
+    """Read machine_id from config, fall back to hostname."""
+    try:
+        if CONFIG_PATH.exists():
+            config = json.loads(CONFIG_PATH.read_text())
+            if config.get("machine_id"):
+                return config["machine_id"]
+    except Exception:
+        pass
+    return socket.gethostname()
+
+
+def _read_seeds() -> str:
+    """Read all seed files and concatenate them."""
+    if not SEEDS_DIR.exists():
+        return ""
+
+    parts = []
+    # Read in a stable order
+    for name in ["identity", "preferences", "people", "projects"]:
+        path = SEEDS_DIR / f"{name}.md"
+        if path.exists():
+            content = path.read_text().strip()
+            # Skip files that are just the template header with no real content
+            lines = [l for l in content.split("\n") if l.strip() and not l.strip().startswith("<!--")]
+            if len(lines) > 1:  # More than just the "# Title" line
+                parts.append(content)
+
+    # Also read any extra seed files not in the standard set
+    for path in sorted(SEEDS_DIR.glob("*.md")):
+        if path.stem not in ["identity", "preferences", "people", "projects"]:
+            content = path.read_text().strip()
+            if content:
+                parts.append(content)
+
+    result = "\n\n".join(parts)
+    if len(result) > MAX_SEED_CHARS:
+        result = result[:MAX_SEED_CHARS] + "\n...(truncated)"
+    return result
+
+
+def _read_anchors(days: int = 5) -> str:
+    """Read recent anchor entries from the last N days, grouped by day."""
+    if not ANCHORS_DIR.exists():
+        return ""
+
+    cutoff = datetime.now() - timedelta(days=days)
+    entries = []
+
+    # Read all anchor JSONL files (from any machine)
+    for anchor_file in ANCHORS_DIR.glob("*.jsonl"):
         try:
-            sessions.append(json.loads(f.read_text()))
+            with open(anchor_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                        ts = entry.get("ts", "")
+                        if ts:
+                            entry_dt = datetime.fromisoformat(ts.replace("Z", "+00:00").replace("Z", ""))
+                            if entry_dt.replace(tzinfo=None) >= cutoff:
+                                entries.append(entry)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
         except Exception:
             continue
-        if len(sessions) >= limit:
+
+    if not entries:
+        return ""
+
+    # Sort by timestamp descending
+    entries.sort(key=lambda e: e.get("ts", ""), reverse=True)
+
+    # Group by day
+    by_day: dict[str, list[dict]] = {}
+    for entry in entries:
+        ts = entry.get("ts", "")
+        day = ts[:10] if len(ts) >= 10 else "unknown"
+        by_day.setdefault(day, []).append(entry)
+
+    parts = ["## Recent Activity"]
+    total_chars = 0
+    for day in sorted(by_day.keys(), reverse=True):
+        day_entries = by_day[day]
+        try:
+            day_label = datetime.strptime(day, "%Y-%m-%d").strftime("%b %d, %Y")
+        except ValueError:
+            day_label = day
+        day_section = f"\n### {day_label}"
+        for entry in day_entries:
+            summary = entry.get("summary", "")
+            mood = entry.get("mood", "")
+            open_threads = entry.get("open_threads", [])
+
+            line = f"- {summary}"
+            if mood:
+                line = f"- [{mood}] {summary}"
+            if open_threads:
+                line += f" (threads: {', '.join(open_threads)})"
+
+            ts = entry.get("ts", "")
+            if len(ts) >= 16:
+                try:
+                    t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    line += f" — {t.strftime('%I:%M %p')}"
+                except ValueError:
+                    pass
+
+            day_section += f"\n{line}"
+
+        if total_chars + len(day_section) > MAX_ANCHOR_CHARS:
             break
-    return sessions
+        parts.append(day_section)
+        total_chars += len(day_section)
 
-
-def _count_session_files() -> int:
-    if not SESSIONS_DIR.exists():
-        return 0
-    return len(list(SESSIONS_DIR.glob("*.json")))
+    return "\n".join(parts)
 
 
 def main():
@@ -50,35 +156,30 @@ def main():
 
         parts = []
 
-        # ── Recent sessions (last 3, from files) ──────────────
+        # ── Layer 1: Seed files ────────────────────────────────
         try:
-            recent = _read_recent_sessions(limit=3)
-            if recent:
-                parts.append("[Memorable] Recent sessions:")
-                for s in recent:
-                    parts.append(f"\n### {s['date']} — {s['title']}")
-                    if s.get("summary"):
-                        parts.append(s["summary"])
+            seeds = _read_seeds()
+            if seeds:
+                parts.append("[Memorable]\n")
+                parts.append(seeds)
         except Exception as e:
             with open(error_log_path, "a") as f:
-                f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] session_start: sessions error: {e}\n")
+                f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] session_start: seeds error: {e}\n")
 
-        # ── Stats ─────────────────────────────────────────────
+        # ── Layer 2: Recent anchors ────────────────────────────
         try:
-            session_count = _count_session_files()
-            if session_count > 0:
+            anchors = _read_anchors(days=5)
+            if anchors:
                 parts.append("")
-                parts.append(
-                    f"[Memorable] Memory: {session_count} sessions. "
-                    f"Use memorable_search_sessions to search."
-                )
-        except Exception:
-            pass
+                parts.append(anchors)
+        except Exception as e:
+            with open(error_log_path, "a") as f:
+                f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] session_start: anchors error: {e}\n")
 
         if parts:
             print("\n".join(parts))
         else:
-            print("[Memorable] Fresh installation — no memory data yet.")
+            print("[Memorable] No seed files or anchors found. Use memorable_onboard to set up your identity.")
 
     except Exception as e:
         try:

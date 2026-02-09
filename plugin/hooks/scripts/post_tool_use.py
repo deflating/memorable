@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """PostToolUse hook for Memorable.
 
-Captures tool usage by appending to ~/.memorable/data/observations.jsonl.
+Captures tool usage by appending to ~/.memorable/data/observations/{machine_id}.jsonl.
 No database, no queue — just fast file append.
 """
 
 import json
+import socket
 import sys
 import time
 from datetime import datetime, timezone
@@ -18,6 +19,21 @@ SKIP_TOOLS = {
     "TodoWrite", "AskUserQuestion", "ListMcpResourcesTool",
     "ToolSearch", "EnterPlanMode", "ExitPlanMode",
 }
+
+
+def get_machine_id() -> str:
+    """Read machine_id from config, fall back to hostname."""
+    config_path = Path.home() / ".memorable" / "config.json"
+    try:
+        if config_path.exists():
+            with open(config_path) as f:
+                cfg = json.load(f)
+            mid = cfg.get("machine_id")
+            if mid:
+                return mid
+    except Exception:
+        pass
+    return socket.gethostname()
 
 
 def main():
@@ -59,9 +75,12 @@ def main():
         if file_path:
             summary += f" on {file_path}"
 
-        # Append to JSONL file
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        obs_file = DATA_DIR / "observations.jsonl"
+        machine_id = get_machine_id()
+
+        # Append to per-machine JSONL file
+        obs_dir = DATA_DIR / "observations"
+        obs_dir.mkdir(parents=True, exist_ok=True)
+        obs_file = obs_dir / f"{machine_id}.jsonl"
 
         entry = {
             "ts": datetime.now(timezone.utc).isoformat(),
