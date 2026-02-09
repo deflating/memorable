@@ -1,18 +1,26 @@
 #!/usr/bin/env python3
 """SessionStart hook for Memorable.
 
-Tells Claude to read seed files in order.
+Tells Claude to read seed files in order, then surfaces the most
+salient session notes (ranked by effective salience with decay).
 Read order: matt.md > claude.md > now.md
 """
 
 import json
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 DATA_DIR = Path.home() / ".memorable" / "data"
 SEEDS_DIR = DATA_DIR / "seeds"
 CONFIG_PATH = Path.home() / ".memorable" / "config.json"
+
+# Salience constants (must match session_end.py)
+DECAY_FACTOR = 0.97
+MIN_SALIENCE = 0.05
+MAX_SALIENT_NOTES = 8
+MAX_SALIENT_CHARS = 6000
 
 
 def _get_config() -> dict:
@@ -33,6 +41,86 @@ def _get_user_name() -> str:
             if path.stem not in ("claude", "now"):
                 return path.stem
     return ""
+
+
+def _effective_salience(entry: dict) -> float:
+    """Calculate effective salience for a note entry."""
+    salience = entry.get("salience", 1.0)
+    emotional_weight = entry.get("emotional_weight", 0.3)
+
+    last_ref = entry.get("last_referenced", entry.get("ts", ""))
+    try:
+        ts_clean = str(last_ref).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(ts_clean)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400
+    except (ValueError, TypeError):
+        days = 30
+
+    adjusted_days = days * (1.0 - emotional_weight * 0.5)
+    decayed = salience * (DECAY_FACTOR ** adjusted_days)
+    return max(MIN_SALIENCE, decayed)
+
+
+def _get_salient_notes(notes_dir: Path) -> list[tuple[float, dict]]:
+    """Load all notes, score them, return sorted (highest salience first)."""
+    scored = []
+    for jsonl_file in notes_dir.glob("*.jsonl"):
+        try:
+            with open(jsonl_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    score = _effective_salience(entry)
+                    scored.append((score, entry))
+        except OSError:
+            continue
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return scored
+
+
+def _format_salient_notes(scored: list[tuple[float, dict]]) -> str:
+    """Format top notes into a compact text block for injection."""
+    parts = []
+    total_chars = 0
+    for score, entry in scored[:MAX_SALIENT_NOTES]:
+        note = entry.get("note", "")
+        # Extract just the Summary section for compactness
+        summary = ""
+        for section_line in note.split("\n"):
+            if section_line.startswith("## Summary"):
+                # Grab everything until the next ## or end
+                idx = note.index(section_line) + len(section_line)
+                rest = note[idx:]
+                end = rest.find("\n## ")
+                summary = rest[:end].strip() if end != -1 else rest.strip()
+                break
+
+        if not summary:
+            # Fallback: first 200 chars of note
+            summary = note[:200].strip()
+
+        tags = entry.get("topic_tags", [])
+        tag_str = ", ".join(tags) if tags else ""
+        ts = entry.get("first_ts", entry.get("ts", ""))[:10]  # just the date
+
+        line = f"[{ts} | salience:{score:.2f}]"
+        if tag_str:
+            line += f" ({tag_str})"
+        line += f" {summary[:300]}"
+
+        if total_chars + len(line) > MAX_SALIENT_CHARS:
+            break
+        parts.append(line)
+        total_chars += len(line)
+
+    return "\n".join(parts)
 
 
 def main():
@@ -73,12 +161,17 @@ def main():
         lines.append("")
         lines.append("Do NOT skip this. Do NOT respond before reading these files.")
 
-        # Add session notes search instruction
+        # Add salient session notes
         notes_dir = DATA_DIR / "notes"
         if notes_dir.exists():
-            lines.append("")
-            lines.append(f"[Memorable] Session notes are stored in {notes_dir}/")
-            lines.append("When the user asks about past sessions, decisions, people, or projects — or when past context seems relevant — search these notes with Grep.")
+            scored = _get_salient_notes(notes_dir)
+            if scored:
+                salient_text = _format_salient_notes(scored)
+                lines.append("")
+                lines.append(f"[Memorable] Top session notes by salience (from {len(scored)} total):")
+                lines.append(salient_text)
+                lines.append("")
+                lines.append(f"For deeper search, grep {notes_dir}/ by keyword.")
 
         print("\n".join(lines))
 

@@ -7,7 +7,9 @@ to ~/.memorable/data/notes/{machine_id}.jsonl.
 """
 
 import json
+import math
 import os
+import re
 import socket
 import sys
 import time
@@ -219,7 +221,13 @@ Rules:
 - Don't summarize tool calls or file reads unless they led to something significant.
 - If the session is purely technical with no personal content, skip People & Life and keep Mood brief.
 - If the session is purely conversational with no code, skip Technical Context.
-- The notes will be read by an AI at the start of a future session to establish context, so optimise for that use case."""
+- The notes will be read by an AI at the start of a future session to establish context, so optimise for that use case.
+
+After the markdown note, output exactly this metadata line (no extra text around it):
+<!-- META: {{"topic_tags": ["tag1", "tag2", ...], "emotional_weight": 0.5}} -->
+
+topic_tags: 3-5 short lowercase tags capturing the main topics (e.g. "memorable", "daemon", "mac-mini", "memory-system", "job-resignation"). Use consistent naming across sessions.
+emotional_weight: float 0.0-1.0. Use 0.1-0.3 for routine technical sessions, 0.4-0.6 for sessions with meaningful decisions or progress, 0.7-1.0 for sessions with strong emotion, major life events, breakthroughs, or significant frustration."""
 
     return prompt
 
@@ -423,6 +431,101 @@ def generate_rolling_summary(cfg: dict, notes_dir: Path):
     log_error(f"SUCCESS: now.md written ({len(summary)} chars, {len(entries)} notes)")
 
 
+def parse_meta(raw_response: str) -> tuple[str, list[str], float]:
+    """Extract metadata from LLM response. Returns (note_text, topic_tags, emotional_weight)."""
+    meta_match = re.search(r'<!-- META:\s*(\{.*?\})\s*-->', raw_response)
+    if meta_match:
+        note_text = raw_response[:meta_match.start()].strip()
+        try:
+            meta = json.loads(meta_match.group(1))
+            tags = meta.get("topic_tags", [])
+            weight = float(meta.get("emotional_weight", 0.3))
+            weight = max(0.0, min(1.0, weight))
+            return note_text, tags, weight
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
+    return raw_response.strip(), [], 0.3
+
+
+# Salience constants
+DECAY_FACTOR = 0.97  # per-day decay (~0.4 after 30 days, ~0.16 after 60)
+MIN_SALIENCE = 0.05
+REINFORCEMENT_BOOST = 0.3  # added to salience when a topic recurs
+
+
+def effective_salience(entry: dict) -> float:
+    """Calculate effective salience for a note entry."""
+    salience = entry.get("salience", 1.0)
+    emotional_weight = entry.get("emotional_weight", 0.3)
+
+    last_ref = entry.get("last_referenced", entry.get("ts", ""))
+    try:
+        ts_clean = str(last_ref).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(ts_clean)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400
+    except (ValueError, TypeError):
+        days = 30  # assume old if unparseable
+
+    # Emotional weight acts as decay resistance: higher weight = slower decay
+    # Effective decay = DECAY_FACTOR ^ (days * (1 - emotional_weight * 0.5))
+    adjusted_days = days * (1.0 - emotional_weight * 0.5)
+    decayed = salience * (DECAY_FACTOR ** adjusted_days)
+    return max(MIN_SALIENCE, decayed)
+
+
+def update_salience_on_new_note(notes_dir: Path, new_tags: list[str], new_session: str):
+    """Scan existing notes and boost salience for those sharing topic tags with the new note."""
+    if not new_tags:
+        return
+
+    new_tag_set = set(new_tags)
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    for jsonl_file in notes_dir.glob("*.jsonl"):
+        lines = []
+        modified = False
+        try:
+            with open(jsonl_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        lines.append("")
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        lines.append(line)
+                        continue
+
+                    # Don't boost the note we just wrote
+                    if entry.get("session") == new_session:
+                        lines.append(json.dumps(entry))
+                        continue
+
+                    entry_tags = set(entry.get("topic_tags", []))
+                    overlap = entry_tags & new_tag_set
+                    if overlap:
+                        old_salience = entry.get("salience", 1.0)
+                        boost = REINFORCEMENT_BOOST * (len(overlap) / max(len(entry_tags), 1))
+                        entry["salience"] = min(2.0, old_salience + boost)
+                        entry["last_referenced"] = now_iso
+                        entry["reference_count"] = entry.get("reference_count", 0) + 1
+                        modified = True
+
+                    lines.append(json.dumps(entry))
+        except OSError:
+            continue
+
+        if modified:
+            try:
+                with open(jsonl_file, "w") as f:
+                    f.write("\n".join(lines) + "\n")
+            except OSError as e:
+                log_error(f"Failed to write salience updates to {jsonl_file}: {e}")
+
+
 def main():
     try:
         try:
@@ -458,12 +561,14 @@ def main():
         prompt = build_llm_prompt(parsed, session_id)
         raw_response = call_llm(prompt, cfg)
 
-        # Store the raw markdown note
-        note_text = raw_response.strip()
+        # Parse note text and metadata
+        note_text, topic_tags, emotional_weight = parse_meta(raw_response)
 
-        # Build the full entry
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        # Build the full entry with salience metadata
         entry = {
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "ts": now_iso,
             "session": session_id,
             "machine": machine_id,
             "message_count": parsed["message_count"],
@@ -471,6 +576,11 @@ def main():
             "first_ts": parsed["first_ts"],
             "last_ts": parsed["last_ts"],
             "note": note_text,
+            "salience": 1.0,
+            "emotional_weight": emotional_weight,
+            "topic_tags": topic_tags,
+            "last_referenced": now_iso,
+            "reference_count": 0,
         }
 
         # Write to notes JSONL
@@ -481,7 +591,14 @@ def main():
         with open(notes_file, "a") as f:
             f.write(json.dumps(entry) + "\n")
 
-        log_error(f"SUCCESS: Note written for session {session_id} ({parsed['message_count']} msgs)")
+        log_error(f"SUCCESS: Note written for session {session_id} "
+                  f"({parsed['message_count']} msgs, tags={topic_tags}, ew={emotional_weight})")
+
+        # Boost salience of related existing notes
+        try:
+            update_salience_on_new_note(notes_dir, topic_tags, session_id)
+        except Exception as e:
+            log_error(f"Salience update failed (non-fatal): {e}")
 
         # Regenerate rolling 5-day summary
         try:
