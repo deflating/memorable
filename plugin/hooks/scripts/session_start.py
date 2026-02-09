@@ -178,8 +178,7 @@ def _read_now() -> str:
         content = now_path.read_text().strip()
         if content:
             if len(content) > MAX_NOW_CHARS:
-                content = content[:MAX_NOW_CHARS] + "
-...(truncated)"
+                content = content[:MAX_NOW_CHARS] + "\n...(truncated)"
             return content
     return ""
 
