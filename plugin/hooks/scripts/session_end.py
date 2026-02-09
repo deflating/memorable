@@ -572,7 +572,6 @@ def main():
             "session": session_id,
             "machine": machine_id,
             "message_count": parsed["message_count"],
-            "tool_call_count": len(parsed["tool_calls"]),
             "first_ts": parsed["first_ts"],
             "last_ts": parsed["last_ts"],
             "note": note_text,

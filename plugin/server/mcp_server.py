@@ -1,7 +1,7 @@
 """MCP server for Memorable.
 
 Exposes tools to Claude Code for memory management:
-- memorable_search: unified search across sessions, observations, prompts
+- memorable_search: unified search across sessions and notes
 - memorable_get_status: file counts and health
 - memorable_onboard: first-time setup
 - memorable_update_seed: update seed files
@@ -125,7 +125,7 @@ class MemorableMCP:
     # ── Tool Implementations ──────────────────────────────────
 
     def _tool_search(self, args: dict) -> str:
-        """Unified search across sessions, observations, prompts."""
+        """Unified search across sessions and notes."""
         query = args.get("query", "").strip()
         if not query:
             return "Please provide a search query."
@@ -140,12 +140,6 @@ class MemorableMCP:
 
         if not filter_type or filter_type == "session":
             results.extend(self._search_sessions(query_lower, cutoff))
-
-        if not filter_type or filter_type == "observation":
-            results.extend(self._search_jsonl_dir("observations", query_lower, cutoff))
-
-        if not filter_type or filter_type == "prompt":
-            results.extend(self._search_jsonl_dir("prompts", query_lower, cutoff))
 
         if not filter_type or filter_type == "note":
             results.extend(self._search_jsonl_dir("notes", query_lower, cutoff))
@@ -178,22 +172,13 @@ class MemorableMCP:
     def _tool_get_status(self, args: dict) -> str:
         """System status: count files and lines."""
         seed_count = len(list(SEEDS_DIR.glob("*.md"))) if SEEDS_DIR.exists() else 0
-
-        session_dir = DATA_DIR / "sessions"
-        session_count = len(list(session_dir.glob("*.json"))) if session_dir.exists() else 0
-        obs_count = self._count_jsonl_dir("observations")
-        prompt_count = self._count_jsonl_dir("prompts")
         notes_count = self._count_jsonl_dir("notes")
 
         lines = [
             "## Memorable System Status\n",
             f"- Seeds: {seed_count} (identity files)",
             f"- Notes: {notes_count} (session-end LLM notes)",
-            f"- Sessions: {session_count}",
-            f"- Observations: {obs_count}",
-            f"- Prompts: {prompt_count}",
             f"- Data dir: {DATA_DIR}",
-            f"- Architecture: v4 files-first (Syncthing sync)",
         ]
         return "\n".join(lines)
 
@@ -252,16 +237,6 @@ class MemorableMCP:
 
     def _entry_text(self, entry: dict, source_type: str) -> str:
         """Extract display text from a JSONL entry based on its type."""
-        if source_type == "observation":
-            tool = entry.get("tool", "")
-            summary = entry.get("summary", "")
-            file_ = entry.get("file", "")
-            text = f"[{tool}] {summary}" if tool else summary
-            if file_:
-                text += f" ({file_})"
-            return text
-        if source_type == "prompt":
-            return entry.get("prompt", "")
         if source_type == "note":
             note = entry.get("note", "")
             # Return just the first line (Summary section) for search results
@@ -270,7 +245,7 @@ class MemorableMCP:
                 if line and not line.startswith("#"):
                     return line[:200]
             return note[:200]
-        return entry.get("note", entry.get("summary", entry.get("prompt", json.dumps(entry))))
+        return entry.get("note", entry.get("summary", json.dumps(entry)))
 
     def _normalize_ts(self, ts) -> str:
         """Convert any timestamp format to ISO string for consistent sorting."""
@@ -411,7 +386,7 @@ class MemorableMCP:
 TOOLS = [
     {
         "name": "memorable_search",
-        "description": "Search across all memory: sessions, notes (session-end summaries), observations (tool usage), and user prompts. Use for 'when did we discuss X', 'what happened with Y', or 'when did I say Z'.",
+        "description": "Search across session notes. Use for 'when did we discuss X', 'what happened with Y', or 'when did I say Z'.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -422,7 +397,7 @@ TOOLS = [
                 "type": {
                     "type": "string",
                     "description": "Filter to a specific source type",
-                    "enum": ["session", "note", "observation", "prompt"],
+                    "enum": ["session", "note"],
                 },
                 "days_back": {
                     "type": "integer",
@@ -440,7 +415,7 @@ TOOLS = [
     },
     {
         "name": "memorable_get_status",
-        "description": "Get Memorable system status: counts of seeds, sessions, observations, and prompts.",
+        "description": "Get Memorable system status: counts of seeds and session notes.",
         "inputSchema": {
             "type": "object",
             "properties": {},
