@@ -90,6 +90,19 @@ def main():
         with open(prompts_file, "a") as f:
             f.write(json.dumps(entry) + "\n")
 
+        # Check for daemon hint files (proactive context from background daemon)
+        hints_dir = DATA_DIR / "hints"
+        hint_file = hints_dir / f"{session_id.replace('/', '_')}.txt"
+        if hint_file.exists():
+            try:
+                hint_text = hint_file.read_text().strip()
+                if hint_text:
+                    print(hint_text)
+                # Remove after reading so it's only injected once
+                hint_file.unlink()
+            except Exception:
+                pass
+
     except Exception as e:
         try:
             with open(error_log_path, "a") as f:

@@ -9,15 +9,12 @@ to ~/.memorable/data/notes/{machine_id}.jsonl.
 import json
 import os
 import socket
-import subprocess
 import sys
 import time
 import urllib.request
 import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-
-PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
 
 DATA_DIR = Path.home() / ".memorable" / "data"
 CONFIG_PATH = Path.home() / ".memorable" / "config.json"
@@ -491,18 +488,6 @@ def main():
             generate_rolling_summary(cfg, notes_dir)
         except Exception as e:
             log_error(f"Rolling summary failed (non-fatal): {e}")
-
-        # Rebuild oracle context and warm KV cache (runs in background)
-        try:
-            subprocess.Popen(
-                [sys.executable, "-m", "oracle.build_context", "--warm"],
-                cwd=str(PLUGIN_ROOT),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            log_error("Oracle context rebuild started (background)")
-        except Exception as e:
-            log_error(f"Oracle rebuild failed (non-fatal): {e}")
 
     except Exception as e:
         log_error(f"ERROR: {e}")
