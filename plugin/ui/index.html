@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Memorable</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <h1>Memorable</h1>
+      <nav class="tabs">
+        <a href="#notes" class="tab active">Notes</a>
+        <a href="#anchors" class="tab">Anchors</a>
+        <a href="#seeds" class="tab">Seeds</a>
+        <a href="#salience" class="tab">Salience</a>
+      </nav>
+      <div class="stats-bar" id="stats-bar"></div>
+    </div>
+  </header>
+  <main id="app">
+    <div class="loading">Loading...</div>
+  </main>
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>

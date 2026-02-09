@@ -1,0 +1,164 @@
+import { api, formatDate, formatTime, el } from './utils.js';
+
+export async function render(container) {
+    let anchorsData;
+
+    try {
+        const data = await api('/api/anchors');
+        anchorsData = data.anchors || [];
+    } catch (err) {
+        container.innerHTML = '<div class="empty-state">Failed to load anchors: ' + err.message + '</div>';
+        return;
+    }
+
+    if (anchorsData.length === 0) {
+        container.innerHTML = '<div class="empty-state">No anchors yet. The daemon generates these during sessions.</div>';
+        return;
+    }
+
+    // Group anchors by session
+    const groups = {};
+    for (const anchor of anchorsData) {
+        const sid = anchor.session || 'unknown';
+        if (!groups[sid]) groups[sid] = [];
+        groups[sid].push(anchor);
+    }
+
+    // Sort within each group by chunk number
+    for (const sid of Object.keys(groups)) {
+        groups[sid].sort((a, b) => (a.chunk || 0) - (b.chunk || 0));
+    }
+
+    // Sort session groups newest first
+    const sortedSessions = Object.keys(groups).sort((a, b) => {
+        const ta = groups[a][0].ts ? new Date(groups[a][0].ts).getTime() : 0;
+        const tb = groups[b][0].ts ? new Date(groups[b][0].ts).getTime() : 0;
+        return tb - ta;
+    });
+
+    for (const sid of sortedSessions) {
+        const group = el('div', 'session-group');
+
+        const header = el('div', 'session-header');
+        const shortId = sid.length > 8 ? sid.substring(0, 8) : sid;
+        const firstTs = groups[sid][0].ts;
+        header.textContent = 'Session ' + shortId + ' \u2014 ' + formatDate(firstTs);
+        group.appendChild(header);
+
+        for (const anchor of groups[sid]) {
+            group.appendChild(renderAnchorCard(anchor));
+        }
+
+        container.appendChild(group);
+    }
+}
+
+// Render a single anchor card
+// Expected schema: topic, doing, next, decided, blocked, mood, unresolved, keywords[], quote
+// + mechanical: files[], commands[], human_messages[]
+function renderAnchorCard(anchor) {
+    const card = el('div', 'anchor-card');
+
+    // Topic as card title
+    if (anchor.topic) {
+        const topic = el('div', 'anchor-topic');
+        topic.textContent = anchor.topic;
+        card.appendChild(topic);
+    }
+
+    // AFM fields as labeled rows
+    const fields = [
+        { key: 'doing', label: 'DOING' },
+        { key: 'next', label: 'NEXT' },
+        { key: 'decided', label: 'DECIDED', skip: 'none' },
+        { key: 'blocked', label: 'BLOCKED', skip: 'none' },
+        { key: 'unresolved', label: 'UNRESOLVED', skip: 'none' },
+    ];
+
+    for (const f of fields) {
+        const val = anchor[f.key];
+        if (!val) continue;
+        if (f.skip && val.toLowerCase() === f.skip) continue;
+
+        const row = el('div', 'anchor-field');
+        const label = el('div', 'anchor-label');
+        label.textContent = f.label;
+        const value = el('div', 'anchor-value');
+        value.textContent = val;
+        row.appendChild(label);
+        row.appendChild(value);
+        card.appendChild(row);
+    }
+
+    // Quote
+    if (anchor.quote) {
+        const quote = el('div', 'anchor-quote');
+        quote.textContent = anchor.quote;
+        card.appendChild(quote);
+    }
+
+    // Keywords as pills
+    if (anchor.keywords && anchor.keywords.length > 0) {
+        const tagsDiv = el('div', 'anchor-tags');
+        for (const kw of anchor.keywords) {
+            const tag = el('span', 'tag');
+            tag.textContent = kw;
+            tagsDiv.appendChild(tag);
+        }
+        card.appendChild(tagsDiv);
+    }
+
+    // Mechanical metadata: files touched
+    if (anchor.files && anchor.files.length > 0) {
+        const filesDiv = el('div', 'anchor-files');
+        const label = el('div', 'anchor-label');
+        label.textContent = 'FILES';
+        filesDiv.appendChild(label);
+        for (const f of anchor.files) {
+            const fileEl = el('span', 'anchor-file');
+            // Show just filename, not full path
+            const parts = f.split('/');
+            fileEl.textContent = parts[parts.length - 1];
+            fileEl.title = f;
+            filesDiv.appendChild(fileEl);
+        }
+        card.appendChild(filesDiv);
+    }
+
+    // Mechanical metadata: human messages
+    if (anchor.human_messages && anchor.human_messages.length > 0) {
+        const msgsDiv = el('div', 'anchor-field');
+        const label = el('div', 'anchor-label');
+        label.textContent = 'HUMAN';
+        msgsDiv.appendChild(label);
+        for (const msg of anchor.human_messages) {
+            const msgEl = el('div', 'anchor-human-msg');
+            msgEl.textContent = msg;
+            msgsDiv.appendChild(msgEl);
+        }
+        card.appendChild(msgsDiv);
+    }
+
+    // Mood pill + meta line
+    const footer = el('div', 'anchor-footer');
+
+    if (anchor.mood) {
+        const moodSpan = el('span', 'anchor-mood');
+        moodSpan.textContent = anchor.mood;
+        footer.appendChild(moodSpan);
+    }
+
+    const metaParts = [];
+    if (anchor.chunk != null) metaParts.push('Chunk ' + anchor.chunk);
+    if (anchor.ts) metaParts.push(formatTime(anchor.ts));
+    if (anchor.machine) metaParts.push(anchor.machine.split('.')[0]);
+    if (metaParts.length) {
+        const meta = el('span', 'meta');
+        meta.textContent = metaParts.join(' \u00b7 ');
+        footer.appendChild(meta);
+    }
+
+    card.appendChild(footer);
+
+    return card;
+}
