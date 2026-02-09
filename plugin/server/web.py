@@ -121,11 +121,33 @@ def load_all_notes():
 
 
 def load_all_anchors():
-    """Return list of anchor dicts, each enriched with machine field."""
+    """Return list of anchor dicts parsed from plain text .md files."""
     anchors = []
-    for machine, obj in load_jsonl_dir(ANCHORS_DIR):
-        obj["machine"] = machine
-        anchors.append(obj)
+    if not ANCHORS_DIR.is_dir():
+        return anchors
+    for path in sorted(ANCHORS_DIR.glob("*.md")):
+        machine = path.stem
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or not line.startswith("["):
+                continue
+            # Parse: [YYYY-MM-DD HH:MM] summary text
+            bracket_end = line.find("]")
+            if bracket_end < 0:
+                continue
+            ts_str = line[1:bracket_end]
+            summary = line[bracket_end + 1:].strip()
+            if not summary:
+                continue
+            anchors.append({
+                "ts": ts_str,
+                "summary": summary,
+                "machine": machine,
+            })
     return anchors
 
 
@@ -162,8 +184,9 @@ def handle_get_machines():
     machines = set()
     for machine, _ in load_jsonl_dir(NOTES_DIR):
         machines.add(machine)
-    for machine, _ in load_jsonl_dir(ANCHORS_DIR):
-        machines.add(machine)
+    if ANCHORS_DIR.is_dir():
+        for path in ANCHORS_DIR.glob("*.md"):
+            machines.add(path.stem)
     return 200, {"machines": sorted(machines)}
 
 

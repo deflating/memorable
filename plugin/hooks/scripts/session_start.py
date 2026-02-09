@@ -20,9 +20,6 @@ CONFIG_PATH = Path.home() / ".memorable" / "config.json"
 DECAY_FACTOR = 0.97
 MIN_SALIENCE = 0.05
 MAX_SALIENT_NOTES = 8
-MAX_SALIENT_CHARS = 6000
-MAX_ANCHORS = 10
-
 
 def _get_config() -> dict:
     try:
@@ -100,41 +97,6 @@ def _format_salient_notes(scored: list[tuple[float, dict]]) -> str:
     return "\n".join(parts)
 
 
-def _get_recent_anchors(anchors_dir: Path) -> list[dict]:
-    """Load anchors from the most recent session only."""
-    all_anchors = []
-    for jsonl_file in anchors_dir.glob("*.jsonl"):
-        try:
-            with open(jsonl_file) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    all_anchors.append(entry)
-        except OSError:
-            continue
-
-    if not all_anchors:
-        return []
-
-    # Sort by timestamp descending
-    all_anchors.sort(key=lambda a: a.get("ts", ""), reverse=True)
-
-    # Filter to most recent session only
-    most_recent_session = all_anchors[0].get("session", "")
-    if not most_recent_session:
-        return all_anchors[:MAX_ANCHORS]
-
-    session_anchors = [a for a in all_anchors if a.get("session") == most_recent_session]
-
-    # Return in chronological order (oldest first within session)
-    session_anchors.reverse()
-    return session_anchors[:MAX_ANCHORS]
-
 
 def main():
     error_log_path = Path.home() / ".memorable" / "hook-errors.log"
@@ -185,18 +147,6 @@ def main():
                 lines.append(salient_text)
                 lines.append(f"To read a note: grep {notes_dir}/ for its session ID. To search by topic: grep by keyword.")
 
-        # Add anchor files — explicit read instructions, same as seeds
-        anchors_dir = DATA_DIR / "anchors"
-        if anchors_dir.exists():
-            anchor_files = sorted(anchors_dir.glob("*.jsonl"))
-            if anchor_files:
-                lines.append("")
-                lines.append("[Memorable] Read these anchor files for recent session context:")
-                lines.append("")
-                for af in anchor_files:
-                    lines.append(f"3. Read {af}")
-                lines.append("")
-                lines.append("Do NOT skip this. Anchors contain what was happening, which files were being edited, and what was decided.")
 
         print("\n".join(lines))
 

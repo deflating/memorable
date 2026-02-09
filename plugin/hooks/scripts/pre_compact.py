@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """PreCompact hook for Memorable.
 
-Before context compaction, point Claude to anchors for post-compaction recovery.
+Before context compaction, point Claude to anchors and seeds for post-compaction recovery.
 """
 
 import json
@@ -19,11 +19,25 @@ def main():
             hook_input = {}
 
         anchors_dir = DATA_DIR / "anchors"
+        seeds_dir = DATA_DIR / "seeds"
+
         lines = [
-            "[Memorable] Context compaction incoming.",
-            f"After compaction, re-establish context by reading anchors in {anchors_dir}/",
-            "Also re-read seed files in ~/.memorable/data/seeds/ (all .md files there)",
+            "[Memorable] Context compaction incoming. After compaction, read these files to re-establish context:",
+            "",
         ]
+
+        if seeds_dir.exists():
+            for md in sorted(seeds_dir.glob("*.md")):
+                lines.append(f"1. Read {md}")
+
+        if anchors_dir.exists():
+            for af in sorted(anchors_dir.glob("*.md")):
+                lines.append(f"2. Read {af}")
+
+        lines.append("")
+        lines.append("Do NOT skip this. These files contain who you are, what you were working on, and what was decided.")
+        lines.append("Compare anchor timestamps against today's date to understand recency.")
+
         print("\n".join(lines))
 
     except Exception:

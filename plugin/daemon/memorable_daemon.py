@@ -13,12 +13,10 @@ Usage:
 """
 
 import argparse
-import json
 import logging
 import shutil
 import socket
 import subprocess
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -37,51 +35,7 @@ AFM_BIN = shutil.which("afm") or "/opt/homebrew/bin/afm"
 
 AFM_SYSTEM = "You are a conversation summarizer. Be concise."
 
-# Multi-pass prompts — one focused question per AFM call
-AFM_PROMPTS = {
-    "summary": "Summarize this conversation in 2-3 sentences. Another AI will use this to re-establish context.\n\nConversation:\n{chunk_text}",
-    "decided": "Was anything decided or agreed upon in this conversation? Be concise.\n\nConversation:\n{chunk_text}",
-    "unresolved": "What is still unresolved or left open at the end of this conversation? Be concise.\n\nConversation:\n{chunk_text}",
-}
-
-FILE_TOOLS = {"Read", "Edit", "Write", "Glob", "Grep"}
-
-
-def extract_mechanical_metadata(chunk) -> dict:
-    """Extract file paths, commands, and human messages mechanically from the chunk."""
-    meta = {}
-
-    # Unique file paths from file-related tool calls
-    files = []
-    seen_files = set()
-    for tc in chunk.tool_calls:
-        if tc["tool"] in FILE_TOOLS and tc["target"]:
-            path = tc["target"]
-            if path not in seen_files:
-                seen_files.add(path)
-                files.append(path)
-    if files:
-        meta["files"] = files
-
-    # Bash commands (trimmed)
-    commands = []
-    for tc in chunk.tool_calls:
-        if tc["tool"] == "Bash" and tc["target"]:
-            commands.append(tc["target"][:100])
-    if commands:
-        meta["commands"] = commands[:10]
-
-    # All human messages, compressed
-    human_msgs = []
-    for msg in chunk.messages:
-        if msg.get("role") == "user" and msg.get("is_human"):
-            text = msg["text"][:80].replace("\n", " ").strip()
-            if text:
-                human_msgs.append(text)
-    if human_msgs:
-        meta["human_messages"] = human_msgs
-
-    return meta
+AFM_PROMPT = "Summarize this conversation in 2-3 sentences for another AI to re-establish context. Include what was being worked on, any decisions made, and anything left unresolved.\n\nConversation:\n{chunk_text}"
 
 
 class MemorableDaemon:
@@ -122,7 +76,7 @@ class MemorableDaemon:
             return None
 
     def _generate_anchor(self, session_id: str, chunk):
-        """Multi-pass AFM extraction + mechanical metadata."""
+        """Single AFM summary + mechanical metadata → plain text anchor."""
         conversation = chunk.text(max_assistant_len=300)
         if len(conversation) < 20:
             return
@@ -133,36 +87,62 @@ class MemorableDaemon:
         logger.info("Anchor: session=%s chunk=#%d (%d msgs)",
                      session_id, chunk.chunk_number, len(chunk.messages))
 
-        # Multi-pass AFM — one focused question per call
-        afm_fields = {}
-        for field_name, prompt_template in AFM_PROMPTS.items():
-            prompt = prompt_template.format(chunk_text=chunk_text)
-            response = self._call_afm(prompt)
-            if response:
-                afm_fields[field_name] = response
-                logger.debug("AFM %s: %s", field_name, response[:200])
-
-        if not afm_fields.get("summary"):
+        prompt = AFM_PROMPT.format(chunk_text=chunk_text)
+        summary = self._call_afm(prompt)
+        if not summary:
             logger.warning("AFM summary failed, skipping anchor")
             return
 
-        # Mechanical metadata — free, no AFM needed
-        mechanical = extract_mechanical_metadata(chunk)
+        # Clean up — collapse to single line
+        summary = " ".join(summary.split())
 
-        entry = {
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "session": session_id,
-            "chunk": chunk.chunk_number,
-            **afm_fields,
-            **mechanical,
-        }
+        now = datetime.now(timezone.utc)
+        ts_str = now.strftime("%Y-%m-%d %H:%M")
 
-        # Append to per-machine JSONL
-        anchor_file = ANCHORS_DIR / f"{MACHINE_ID}.jsonl"
+        # Build plain text anchor line
+        anchor_line = f"[{ts_str}] {summary}"
+
+        anchor_file = ANCHORS_DIR / f"{MACHINE_ID}.md"
+
+        # Rotate: drop lines older than 24h
+        self._rotate_anchors(anchor_file, now)
+
+        # Append
         with open(anchor_file, "a") as f:
-            f.write(json.dumps(entry) + "\n")
+            f.write(anchor_line + "\n")
 
-        logger.info("Anchor written: %s", afm_fields["summary"][:80])
+        logger.info("Anchor written: %s", summary[:80])
+
+    def _rotate_anchors(self, anchor_file: Path, now: datetime):
+        """Remove anchor lines older than 24 hours."""
+        if not anchor_file.exists():
+            return
+
+        try:
+            lines = anchor_file.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return
+
+        kept = []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            # Parse timestamp from [YYYY-MM-DD HH:MM] prefix
+            if line.startswith("[") and "]" in line:
+                ts_part = line[1:line.index("]")]
+                try:
+                    anchor_dt = datetime.strptime(ts_part, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+                    age_hours = (now - anchor_dt).total_seconds() / 3600
+                    if age_hours <= 24:
+                        kept.append(line)
+                    continue
+                except ValueError:
+                    pass
+            # Keep lines we can't parse (shouldn't happen, but safe)
+            kept.append(line)
+
+        anchor_file.write_text("\n".join(kept) + "\n" if kept else "", encoding="utf-8")
 
     def on_session_idle(self, session_id: str, transcript_path: str, human_count: int):
         """Called when a session goes idle. Generates a session note via LLM."""
