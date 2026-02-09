@@ -93,6 +93,13 @@ class TranscriptChunker:
         """Read any new lines appended since our last read."""
         entries = []
         try:
+            # Detect file truncation (e.g. context compaction rewrites the JSONL)
+            current_size = self.path.stat().st_size
+            if current_size < self._offset:
+                logger.info("File truncated (compaction?): %s (was %d, now %d)",
+                            self.path.name, self._offset, current_size)
+                self._offset = 0
+
             with open(self.path, "r") as f:
                 f.seek(self._offset)
                 for line in f:
