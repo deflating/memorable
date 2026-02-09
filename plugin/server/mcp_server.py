@@ -1,19 +1,23 @@
 """MCP server for Memorable.
 
 Exposes tools to Claude Code for memory management:
-- memorable_search: unified search across sessions, observations, prompts
+- memorable_recall: ask the memory oracle about past context
+- memorable_search: substring search across sessions, observations, prompts
 - memorable_get_status: file counts and health
 - memorable_onboard: first-time setup
 - memorable_update_seed: update seed files
 """
 
 import json
+import logging
 import shutil
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .config import Config
+
+logger = logging.getLogger(__name__)
 
 DATA_DIR = Path.home() / ".memorable" / "data"
 SEEDS_DIR = DATA_DIR / "seeds"
@@ -45,6 +49,7 @@ class MemorableMCP:
 
     def __init__(self, config: Config | None = None):
         self.config = config or Config()
+        self._oracle = None  # Lazy-loaded on first recall call
 
     def run(self):
         """Main loop: read JSON-RPC from stdin, write responses to stdout."""
@@ -100,6 +105,7 @@ class MemorableMCP:
         args = params.get("arguments", {})
 
         tool_handlers = {
+            "memorable_recall": self._tool_recall,
             "memorable_search": self._tool_search,
             "memorable_get_status": self._tool_get_status,
             "memorable_onboard": self._tool_onboard,
@@ -123,6 +129,27 @@ class MemorableMCP:
             }
 
     # ── Tool Implementations ──────────────────────────────────
+
+    def _tool_recall(self, args: dict) -> str:
+        """Ask the memory oracle about past context."""
+        question = args.get("question", "").strip()
+        if not question:
+            return "Please provide a question."
+
+        if self._oracle is None:
+            try:
+                from oracle.oracle_client import OracleClient
+                self._oracle = OracleClient()
+            except ImportError:
+                return "Error: oracle module not available."
+
+        try:
+            return self._oracle.ask(question)
+        except ConnectionError:
+            return "Oracle is unreachable. The MLX server on the Mac Mini may not be running."
+        except Exception as e:
+            logger.error("Oracle recall failed: %s", e)
+            return f"Oracle error: {e}"
 
     def _tool_search(self, args: dict) -> str:
         """Unified search across sessions, observations, prompts."""
@@ -409,6 +436,20 @@ class MemorableMCP:
 # ── Tool Definitions ──────────────────────────────────────────
 
 TOOLS = [
+    {
+        "name": "memorable_recall",
+        "description": "Ask the memory oracle about past sessions, decisions, people, projects, or anything from Matt's history. The oracle holds all session notes and knowledge graph in context. Use for: 'what do you know about X', 'when did we discuss Y', 'what was decided about Z'. NOTE: First call after context changes may take a few minutes to warm up.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "Your question about past context, sessions, people, or decisions",
+                },
+            },
+            "required": ["question"],
+        },
+    },
     {
         "name": "memorable_search",
         "description": "Search across all memory: sessions, notes (session-end summaries), observations (tool usage), and user prompts. Use for 'when did we discuss X', 'what happened with Y', or 'when did I say Z'.",
