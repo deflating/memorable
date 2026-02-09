@@ -199,7 +199,7 @@ def main():
         on_chunk=daemon.on_chunk if not args.no_anchors else None,
         on_human_message=None,
         on_session_idle=daemon.on_session_idle,
-        chunk_every=3,
+        chunk_every=10,
         idle_timeout=args.idle_timeout,
     )
 
