@@ -81,10 +81,12 @@ async function renderAnchors(container) {
         });
     }
 
-    // Sort session groups newest first
+    // Sort session groups newest first (by latest anchor, not first)
     const sortedSessions = Object.keys(groups).sort((a, b) => {
-        const ta = groups[a][0].ts ? new Date(groups[a][0].ts).getTime() : 0;
-        const tb = groups[b][0].ts ? new Date(groups[b][0].ts).getTime() : 0;
+        const lastA = groups[a][groups[a].length - 1];
+        const lastB = groups[b][groups[b].length - 1];
+        const ta = lastA.ts ? new Date(lastA.ts).getTime() : 0;
+        const tb = lastB.ts ? new Date(lastB.ts).getTime() : 0;
         return tb - ta;
     });
 
