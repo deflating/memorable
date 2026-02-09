@@ -31,12 +31,13 @@ def main():
                 lines.append(f"1. Read {md}")
 
         if anchors_dir.exists():
-            for af in sorted(anchors_dir.glob("*.md")):
-                lines.append(f"2. Read {af}")
+            anchor_files = sorted(anchors_dir.glob("*.md"))
+            for af in anchor_files:
+                line_count = sum(1 for line in af.read_text(encoding="utf-8").splitlines() if line.strip())
+                lines.append(f"2. Read the last 20 lines of {af} (use offset/limit). It has {line_count} lines. If you need more context, read the full file.")
 
         lines.append("")
         lines.append("Do NOT skip this. These files contain who you are, what you were working on, and what was decided.")
-        lines.append("Compare anchor timestamps against today's date to understand recency.")
 
         print("\n".join(lines))
 
