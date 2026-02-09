@@ -24,6 +24,17 @@
           }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo \"[Memorable] Context recovery available: ~/.memorable/data/anchors/ and ~/.memorable/data/seeds/\""
+          }
+        ]
+      }
     ]
   }
 }
