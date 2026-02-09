@@ -77,14 +77,14 @@ async function renderAnchors(container) {
         groups[sid].sort((a, b) => {
             const ta = a.ts ? new Date(a.ts).getTime() : 0;
             const tb = b.ts ? new Date(b.ts).getTime() : 0;
-            return ta - tb;
+            return tb - ta;
         });
     }
 
     // Sort session groups newest first (by latest anchor, not first)
     const sortedSessions = Object.keys(groups).sort((a, b) => {
-        const lastA = groups[a][groups[a].length - 1];
-        const lastB = groups[b][groups[b].length - 1];
+        const lastA = groups[a][0];
+        const lastB = groups[b][0];
         const ta = lastA.ts ? new Date(lastA.ts).getTime() : 0;
         const tb = lastB.ts ? new Date(lastB.ts).getTime() : 0;
         return tb - ta;
