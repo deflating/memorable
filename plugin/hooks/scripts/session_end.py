@@ -13,7 +13,7 @@ import sys
 import time
 import urllib.request
 import urllib.error
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 DATA_DIR = Path.home() / ".memorable" / "data"
@@ -312,6 +312,103 @@ def call_llm(prompt: str, cfg: dict) -> str:
         raise ValueError(f"Unknown summarizer provider: {provider}")
 
 
+ROLLING_SUMMARY_PROMPT = """You are summarising the last 5 days of session notes between Matt and Claude (an AI coding assistant). These notes come from multiple sessions across multiple machines.
+
+Write a concise rolling summary document in markdown. This document is read by Claude at the start of every new session to quickly catch up on recent context.
+
+Structure:
+
+## What's been happening
+2-3 sentences covering the main themes and work of the last few days.
+
+## Active projects
+Bullet list of what's being actively worked on, with current status.
+
+## Recent decisions
+The most important decisions made (max 5). Format: "Chose X — reason."
+
+## Open threads
+Things left unresolved or explicitly marked for later (max 5).
+
+## People mentioned
+Anyone mentioned recently and why (max 5 people, one line each).
+
+## Mood trajectory
+One sentence on how things have been feeling across sessions.
+
+Rules:
+- Keep the whole document under 1500 words.
+- Be concise. This is a cheat sheet, not an essay.
+- Prioritise recent sessions over older ones.
+- Don't include session timestamps or machine names — just the content.
+- Use Matt's actual words where possible.
+"""
+
+
+def generate_rolling_summary(cfg: dict, notes_dir: Path):
+    """Read last 5 days of notes and generate a rolling summary via DeepSeek."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=5)
+    entries = []
+
+    for jsonl_file in notes_dir.glob("*.jsonl"):
+        try:
+            with open(jsonl_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    ts = entry.get("ts", "")
+                    if not ts:
+                        continue
+                    try:
+                        ts_clean = str(ts).replace("Z", "+00:00")
+                        dt = datetime.fromisoformat(ts_clean)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        if dt < cutoff:
+                            continue
+                    except (ValueError, TypeError):
+                        continue
+                    entries.append(entry)
+        except OSError:
+            continue
+
+    if not entries:
+        log_error("Rolling summary: no recent notes found")
+        return
+
+    # Sort newest first
+    entries.sort(key=lambda e: e.get("ts", ""), reverse=True)
+
+    # Build input: concat notes, cap at 30K chars
+    parts = []
+    total = 0
+    for entry in entries:
+        note = entry.get("note", "")
+        if not note:
+            continue
+        if total + len(note) > 30_000:
+            break
+        parts.append(note)
+        total += len(note)
+
+    notes_text = "\n\n---\n\n".join(parts)
+    prompt = ROLLING_SUMMARY_PROMPT + "\n\nHere are the session notes:\n\n" + notes_text
+
+    summary = call_llm(prompt, cfg)
+
+    # Write to seeds/recent.md
+    recent_path = DATA_DIR / "seeds" / "recent.md"
+    recent_path.parent.mkdir(parents=True, exist_ok=True)
+    recent_path.write_text(summary.strip() + "\n")
+
+    log_error(f"SUCCESS: Rolling summary written ({len(summary)} chars, {len(entries)} notes)")
+
+
 def main():
     try:
         try:
@@ -371,6 +468,12 @@ def main():
             f.write(json.dumps(entry) + "\n")
 
         log_error(f"SUCCESS: Note written for session {session_id} ({parsed['message_count']} msgs)")
+
+        # Regenerate rolling 5-day summary
+        try:
+            generate_rolling_summary(cfg, notes_dir)
+        except Exception as e:
+            log_error(f"Rolling summary failed (non-fatal): {e}")
 
     except Exception as e:
         log_error(f"ERROR: {e}")
