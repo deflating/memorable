@@ -6,6 +6,7 @@ Counts messages per session and emits anchor reminders every 15 messages.
 """
 
 import json
+import random
 import re
 import socket
 import sys
@@ -115,19 +116,38 @@ def main():
             counter_file.write_text("0")
             # Output anchor reminder to stdout
             print(
-                "[Memorable] You've exchanged ~15 messages since your last anchor. "
-                "Please call the memorable_write_anchor tool now with a brief summary "
-                "of the conversation since the last anchor point. Include: what was "
-                "discussed, any decisions made, the current mood/energy, and any open threads. "
-                "Then rewrite now.md via memorable_update_seed(file='now') with a current "
-                "state snapshot: active projects & status, recent decisions, open threads, "
-                "emotional/mental state, and anything a future session needs to know. "
-                "If any stable life facts changed (job, relationships, people, projects), "
-                "also update the user's seed file via memorable_update_seed(file='user')."
+                "[Memorable] Time to write an Anchor.\n\n"
+                "You are writing an Anchor. Anchors are in-the-moment reflections that "
+                "help a future session resume naturally. They are allowed to be reflective "
+                "and descriptive, but must remain provisional. Write as if you are pausing "
+                "mid-walk to leave yourself a note about where you are and what the terrain "
+                "feels like. Allow the context of the session to influence the type of "
+                "information you capture.\n\n"
+                "Include:\n"
+                "1. What this session has been about (in your own words)\n"
+                "2. The current emotional / cognitive tone\n"
+                "3. Any insights, decisions, or shifts that feel real so far\n"
+                "4. What still feels unresolved, open, or tentative\n"
+                "5. What would be confusing or costly to forget if this anchor did not exist\n\n"
+                "Keep it concise. This is a checkpoint, not a conclusion.\n\n"
+                "Call memorable_write_anchor with your anchor text. Then update now.md "
+                "via memorable_update_seed(file='now') with a current state snapshot. "
+                "If any stable life facts changed, also update the user's seed file "
+                "via memorable_update_seed(file='user')."
             )
         else:
             # Save updated count
             counter_file.write_text(str(count))
+
+        # Occasionally clean up old counter files (1 in 20 chance)
+        if random.randint(1, 20) == 1:
+            try:
+                cutoff = time.time() - (7 * 24 * 3600)  # 7 days
+                for f in COUNTER_DIR.iterdir():
+                    if f.suffix == '.count' and f.stat().st_mtime < cutoff:
+                        f.unlink()
+            except Exception:
+                pass
 
     except Exception as e:
         try:

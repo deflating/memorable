@@ -9,6 +9,7 @@ Exposes tools to Claude Code for memory management:
 """
 
 import json
+import shutil
 import socket
 import sys
 from datetime import datetime, timedelta, timezone
@@ -148,11 +149,9 @@ class MemorableMCP:
 
         if not filter_type or filter_type == "observation":
             results.extend(self._search_jsonl_dir("observations", query_lower, cutoff))
-            results.extend(self._search_flat_jsonl("observations.jsonl", "observation", query_lower, cutoff))
 
         if not filter_type or filter_type == "prompt":
             results.extend(self._search_jsonl_dir("prompts", query_lower, cutoff))
-            results.extend(self._search_flat_jsonl("prompts.jsonl", "prompt", query_lower, cutoff))
 
         # Sort by timestamp descending, deduplicate
         results.sort(key=lambda r: r.get("ts", ""), reverse=True)
@@ -186,8 +185,8 @@ class MemorableMCP:
         anchor_count = self._count_jsonl_dir("anchors")
         session_dir = DATA_DIR / "sessions"
         session_count = len(list(session_dir.glob("*.json"))) if session_dir.exists() else 0
-        obs_count = self._count_jsonl_dir("observations") + self._count_flat_jsonl("observations.jsonl")
-        prompt_count = self._count_jsonl_dir("prompts") + self._count_flat_jsonl("prompts.jsonl")
+        obs_count = self._count_jsonl_dir("observations")
+        prompt_count = self._count_jsonl_dir("prompts")
 
         lines = [
             "## Memorable System Status\n",
@@ -229,32 +228,6 @@ class MemorableMCP:
                             results.append({"source": source_type, "ts": self._normalize_ts(ts), "text": text})
             except OSError:
                 continue
-        return results
-
-    def _search_flat_jsonl(self, filename: str, source_type: str, query_lower: str, cutoff: datetime) -> list[dict]:
-        """Search a flat JSONL file at the data root (legacy format)."""
-        filepath = DATA_DIR / filename
-        if not filepath.exists():
-            return []
-        results = []
-        try:
-            with open(filepath) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    ts = entry.get("ts", "")
-                    if not self._after_cutoff(ts, cutoff):
-                        continue
-                    text = self._entry_text(entry, source_type)
-                    if query_lower in text.lower():
-                        results.append({"source": source_type, "ts": self._normalize_ts(ts), "text": text})
-        except OSError:
-            pass
         return results
 
     def _search_sessions(self, query_lower: str, cutoff: datetime) -> list[dict]:
@@ -341,17 +314,6 @@ class MemorableMCP:
             except OSError:
                 continue
         return count
-
-    def _count_flat_jsonl(self, filename: str) -> int:
-        """Count lines in a flat JSONL file at the data root."""
-        filepath = DATA_DIR / filename
-        if not filepath.exists():
-            return 0
-        try:
-            with open(filepath) as f:
-                return sum(1 for line in f if line.strip())
-        except OSError:
-            return 0
 
     # ── Anchor & Seed Tools ───────────────────────────────────
 
@@ -460,7 +422,10 @@ class MemorableMCP:
         if not content.startswith("#"):
             content = f"# {title}\n\n{content}\n"
 
-        (SEEDS_DIR / f"{file_name}.md").write_text(content)
+        seed_path = SEEDS_DIR / f"{file_name}.md"
+        if seed_path.exists():
+            shutil.copy2(seed_path, seed_path.with_suffix(".md.bak"))
+        seed_path.write_text(content)
         return f"Updated {file_name}.md seed file."
 
     # ── IO ────────────────────────────────────────────────────

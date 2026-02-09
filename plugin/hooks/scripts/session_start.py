@@ -21,8 +21,9 @@ ANCHORS_DIR = DATA_DIR / "anchors"
 CONFIG_PATH = Path.home() / ".memorable" / "config.json"
 
 # Rough token budget: seeds get priority, anchors fill the rest
-MAX_SEED_CHARS = 8000
+MAX_SEED_CHARS = 12000
 MAX_ANCHOR_CHARS = 6000
+MAX_NOW_CHARS = 3000
 
 
 def _get_config() -> dict:
@@ -176,6 +177,9 @@ def _read_now() -> str:
     if now_path.exists():
         content = now_path.read_text().strip()
         if content:
+            if len(content) > MAX_NOW_CHARS:
+                content = content[:MAX_NOW_CHARS] + "
+...(truncated)"
             return content
     return ""
 
