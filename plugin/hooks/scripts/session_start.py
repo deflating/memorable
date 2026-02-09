@@ -73,6 +73,13 @@ def main():
         lines.append("")
         lines.append("Do NOT skip this. Do NOT respond before reading these files.")
 
+        # Add session notes search instruction
+        notes_dir = DATA_DIR / "notes"
+        if notes_dir.exists():
+            lines.append("")
+            lines.append(f"[Memorable] Session notes are stored in {notes_dir}/")
+            lines.append("When the user asks about past sessions, decisions, people, or projects — or when past context seems relevant — search these notes with Grep.")
+
         print("\n".join(lines))
 
     except Exception as e:
