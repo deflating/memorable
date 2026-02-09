@@ -2,7 +2,7 @@
 """SessionStart hook for Memorable.
 
 Tells Claude to read seed files in order.
-Read order: matt.md > claude.md > recent.md > now.md
+Read order: matt.md > claude.md > now.md
 """
 
 import json
@@ -30,7 +30,7 @@ def _get_user_name() -> str:
         return name
     if SEEDS_DIR.exists():
         for path in sorted(SEEDS_DIR.glob("*.md")):
-            if path.stem not in ("claude", "now", "recent"):
+            if path.stem not in ("claude", "now"):
                 return path.stem
     return ""
 
@@ -56,7 +56,6 @@ def main():
             files.append(str(claude_path))
 
         now_path = SEEDS_DIR / "now.md"
-        recent_path = SEEDS_DIR / "recent.md"
 
         lines = [
             "[Memorable] BEFORE RESPONDING, read these files in order:",
@@ -66,13 +65,10 @@ def main():
         for f in files:
             lines.append(f"1. Read {f}")
 
-        if recent_path.exists():
-            lines.append(f"2. Read {recent_path} (rolling 5-day summary of recent sessions)")
-
         if now_path.exists():
-            lines.append(f"3. Read and update {now_path} (rolling current-state snapshot)")
+            lines.append(f"2. Read {now_path} (current state + recent 5-day context)")
         else:
-            lines.append(f"3. Create {now_path} (rolling current-state snapshot)")
+            lines.append(f"2. Create {now_path} (current state snapshot)")
 
         lines.append("")
         lines.append("Do NOT skip this. Do NOT respond before reading these files.")

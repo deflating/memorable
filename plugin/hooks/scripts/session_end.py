@@ -312,36 +312,43 @@ def call_llm(prompt: str, cfg: dict) -> str:
         raise ValueError(f"Unknown summarizer provider: {provider}")
 
 
-ROLLING_SUMMARY_PROMPT = """You are summarising the last 5 days of session notes between Matt and Claude (an AI coding assistant). These notes come from multiple sessions across multiple machines.
+ROLLING_SUMMARY_PROMPT = """You are writing a "now" document for an AI coding assistant (Claude Code). This document is read at the start of every new session so Claude can quickly orient: where things are right now, and how they got here.
 
-Write a concise rolling summary document in markdown. This document is read by Claude at the start of every new session to quickly catch up on recent context.
+You will receive session notes from the last 5 days. Synthesise them into a single concise document.
 
-Structure:
+Output this exact markdown structure:
 
-## What's been happening
-2-3 sentences covering the main themes and work of the last few days.
+# Now
 
-## Active projects
-Bullet list of what's being actively worked on, with current status.
+*Last updated: {date}*
 
-## Recent decisions
-The most important decisions made (max 5). Format: "Chose X — reason."
+## Active Focus
+One sentence: what is Matt primarily working on right now?
 
-## Open threads
+## Current State
+Bullet list of what exists, what's running, what's built. Be specific — file names, model names, port numbers, statuses. Max 8 bullets.
+
+## Last 5 Days
+2-3 sentences covering the main arc of recent work. What changed, what was built, what shifted.
+
+## Recent Decisions
+The most important choices made (max 5). Format: "Chose X over Y — reason."
+
+## Open Threads
 Things left unresolved or explicitly marked for later (max 5).
 
-## People mentioned
-Anyone mentioned recently and why (max 5 people, one line each).
+## People Mentioned Recently
+Anyone mentioned in the last few days and why (max 5, one line each). Skip Claude and Matt.
 
-## Mood trajectory
-One sentence on how things have been feeling across sessions.
+## Mood
+One sentence on how things have been feeling.
 
 Rules:
 - Keep the whole document under 1500 words.
-- Be concise. This is a cheat sheet, not an essay.
-- Prioritise recent sessions over older ones.
-- Don't include session timestamps or machine names — just the content.
+- Be concrete and specific, not vague.
+- Prioritise the most recent session heavily — that's the freshest context.
 - Use Matt's actual words where possible.
+- Don't include session timestamps or machine names.
 """
 
 
@@ -397,16 +404,23 @@ def generate_rolling_summary(cfg: dict, notes_dir: Path):
         total += len(note)
 
     notes_text = "\n\n---\n\n".join(parts)
-    prompt = ROLLING_SUMMARY_PROMPT + "\n\nHere are the session notes:\n\n" + notes_text
+    today = datetime.now().strftime("%Y-%m-%d")
+    prompt_text = ROLLING_SUMMARY_PROMPT.replace("{date}", today)
+    prompt_text += "\n\nHere are the session notes:\n\n" + notes_text
 
-    summary = call_llm(prompt, cfg)
+    summary = call_llm(prompt_text, cfg)
 
-    # Write to seeds/recent.md
+    # Write to seeds/now.md (replaces the old now.md entirely)
+    now_path = DATA_DIR / "seeds" / "now.md"
+    now_path.parent.mkdir(parents=True, exist_ok=True)
+    now_path.write_text(summary.strip() + "\n")
+
+    # Clean up old recent.md if it exists
     recent_path = DATA_DIR / "seeds" / "recent.md"
-    recent_path.parent.mkdir(parents=True, exist_ok=True)
-    recent_path.write_text(summary.strip() + "\n")
+    if recent_path.exists():
+        recent_path.unlink()
 
-    log_error(f"SUCCESS: Rolling summary written ({len(summary)} chars, {len(entries)} notes)")
+    log_error(f"SUCCESS: now.md written ({len(summary)} chars, {len(entries)} notes)")
 
 
 def main():
