@@ -72,9 +72,13 @@ async function renderAnchors(container) {
         groups[sid].push(anchor);
     }
 
-    // Sort within each group by chunk number
+    // Sort within each group by timestamp (chunk numbers reset after compaction)
     for (const sid of Object.keys(groups)) {
-        groups[sid].sort((a, b) => (a.chunk || 0) - (b.chunk || 0));
+        groups[sid].sort((a, b) => {
+            const ta = a.ts ? new Date(a.ts).getTime() : 0;
+            const tb = b.ts ? new Date(b.ts).getTime() : 0;
+            return ta - tb;
+        });
     }
 
     // Sort session groups newest first
