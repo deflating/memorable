@@ -162,8 +162,8 @@ def build_knowledge_graph(notes_dir: Path | None = None) -> dict:
 def load_topic_index(max_topics: int = 100) -> str:
     """Load the KG and format a topic index string for the relevance prompt.
 
-    This replaces the daemon's crude _load_topic_index().
     Returns a newline-separated list of topics with addresses.
+    Manual (curated) entries get priority over auto-extracted ones.
     """
     if not KG_PATH.exists():
         return ""
@@ -174,21 +174,10 @@ def load_topic_index(max_topics: int = 100) -> str:
         return ""
 
     lines = []
-
-    # Add entity summaries with their most recent fact
     entities = graph.get("entities", {})
-    # Sort by mentions descending, take top entities
-    sorted_ents = sorted(
-        entities.items(),
-        key=lambda x: x[1].get("mentions", 0),
-        reverse=True,
-    )
-    for name, info in sorted_ents:
-        if info.get("mentions", 0) < 2:
-            continue
-        # Skip "Matt" — he's always relevant, wastes a slot
-        if name == "Matt":
-            continue
+    topics = graph.get("topics", [])
+
+    def _entity_line(name, info):
         facts = info.get("facts", [])
         last_fact = facts[-1] if facts else {}
         addr = last_fact.get("addr", "")
@@ -197,30 +186,57 @@ def load_topic_index(max_topics: int = 100) -> str:
         entry = f"{addr} [{info.get('last_seen', '')}] {etype.upper()}: {name}"
         if snippet:
             entry += f" — {snippet}"
-        lines.append(entry)
+        return entry
 
-    entity_count = len(lines)
+    # Partition entities: manual (curated) vs auto (from notes)
+    manual_ents = []
+    auto_ents = []
+    for name, info in entities.items():
+        if name == "Matt":
+            continue
+        if info.get("source") == "manual":
+            manual_ents.append((name, info))
+        elif info.get("mentions", 0) >= 2:
+            auto_ents.append((name, info))
 
-    # Add recent topics — decisions and open threads are highest value
-    topics = graph.get("topics", [])
-    # Prioritise: decisions > open_threads > rejections > summaries
-    # Within same priority, prefer recent dates
+    # Manual entities: people first, then by fact count
+    type_priority = {"person": 0, "project": 1, "event": 2, "place": 3}
+    manual_ents.sort(key=lambda x: (
+        type_priority.get(x[1].get("type", ""), 5),
+        -len(x[1].get("facts", [])),
+    ))
+    for name, info in manual_ents[:10]:
+        lines.append(_entity_line(name, info))
+
+    # Auto entities: by mentions
+    auto_ents.sort(key=lambda x: x[1].get("mentions", 0), reverse=True)
+    for name, info in auto_ents[:5]:
+        lines.append(_entity_line(name, info))
+
+    # Partition topics: manual vs auto
+    manual_topics = [t for t in topics if t.get("source") == "manual"]
+    auto_topics = [t for t in topics if t.get("source") != "manual"]
+
+    # Manual topics — preferences/health/decisions first, then events
+    manual_topic_priority = {"preference": 0, "health": 1, "decision": 2}
+    manual_topics.sort(key=lambda t: (
+        manual_topic_priority.get(t.get("type", ""), 5),
+        t.get("text", ""),
+    ))
+    manual_cap = min(8, max_topics - len(lines))
+    for topic in manual_topics[:manual_cap]:
+        lines.append(f"{topic.get('addr', '')} [{topic.get('date', '')}] {topic.get('text', '')}")
+
+    # Auto topics fill remaining slots
+    remaining = max_topics - len(lines)
     priority = {"decision": 0, "open_thread": 1, "rejection": 2, "summary": 3}
-    scored = sorted(
-        topics,
-        key=lambda t: (
-            priority.get(t.get("type", ""), 4),
-            "" if t.get("date") else "z",  # undated last
-            t.get("date", ""),  # within priority, sort by date (will reverse)
-        ),
-    )
-
-    remaining = max_topics - entity_count
-    for topic in scored[:remaining]:
-        addr = topic.get("addr", "")
-        date = topic.get("date", "")
-        text = topic.get("text", "")
-        lines.append(f"{addr} [{date}] {text}")
+    auto_topics.sort(key=lambda t: (
+        priority.get(t.get("type", ""), 4),
+        "" if t.get("date") else "z",
+        t.get("date", ""),
+    ))
+    for topic in auto_topics[:remaining]:
+        lines.append(f"{topic.get('addr', '')} [{topic.get('date', '')}] {topic.get('text', '')}")
 
     return "\n".join(lines[:max_topics])
 
@@ -447,6 +463,100 @@ def _cosine_sim(a: list[float], b: list[float]) -> float:
     na = math.sqrt(sum(x * x for x in a))
     nb = math.sqrt(sum(x * x for x in b))
     return dot / (na * nb) if na and nb else 0.0
+
+
+def _load_manual_entities(entities: dict, topics: list):
+    """Load manually curated entities from claude-mem knowledge graph.
+
+    Reads ~/claude-memory/knowledge-graph/memory.jsonl and merges entities
+    into the daemon's KG. Manual entries get source="manual" for priority
+    handling in load_topic_index().
+    """
+    if not MANUAL_KG_PATH.exists():
+        logger.info("No manual KG at %s — skipping", MANUAL_KG_PATH)
+        return
+
+    try:
+        raw = MANUAL_KG_PATH.read_text().strip()
+    except OSError as e:
+        logger.warning("Failed to read manual KG: %s", e)
+        return
+
+    seen_names: set[str] = set()
+    loaded = 0
+
+    for raw_line in raw.split("\n"):
+        if not raw_line.strip():
+            continue
+        try:
+            entry = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+
+        if entry.get("type") != "entity":
+            continue
+
+        name = entry.get("name", "").strip()
+        if not name or name in ("Matt", "Matt Kennelly"):
+            continue
+
+        entity_type = _ENTITY_TYPE_MAP.get(
+            entry.get("entityType", ""), "concept"
+        )
+        observations = entry.get("observations", [])
+        addr = f"manual:{name}"
+
+        # Deduplicate within manual file — merge observations
+        if name in seen_names:
+            if name in entities:
+                existing_texts = {f["text"] for f in entities[name]["facts"]}
+                for obs in observations:
+                    if obs[:200] not in existing_texts:
+                        entities[name]["facts"].append({
+                            "text": obs[:200], "addr": addr, "date": "",
+                        })
+                        existing_texts.add(obs[:200])
+            continue
+
+        seen_names.add(name)
+
+        # Create or merge with existing entity from notes
+        if name not in entities:
+            entities[name] = {
+                "type": entity_type,
+                "mentions": 1,
+                "facts": [],
+                "last_seen": "",
+                "source": "manual",
+            }
+        else:
+            entities[name]["mentions"] += 1
+            # Mark as manual so it gets priority in topic index
+            entities[name]["source"] = "manual"
+
+        # Add observations as facts (cap at 5 per manual entity)
+        existing_texts = {f["text"] for f in entities[name]["facts"]}
+        for obs in observations[:5]:
+            if obs[:200] not in existing_texts:
+                entities[name]["facts"].append({
+                    "text": obs[:200], "addr": addr, "date": "",
+                })
+                existing_texts.add(obs[:200])
+
+        # For high-value types, also add a topic entry
+        if entity_type in ("preference", "decision", "health", "event"):
+            summary_obs = observations[0] if observations else name
+            topics.append({
+                "text": f"{entity_type.upper()}: {name} — {summary_obs[:120]}",
+                "addr": addr,
+                "date": "",
+                "type": entity_type,
+                "source": "manual",
+            })
+
+        loaded += 1
+
+    logger.info("Manual KG loaded: %d entities from %s", loaded, MANUAL_KG_PATH)
 
 
 def _parse_sections(note: str) -> dict[str, str]:
