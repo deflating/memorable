@@ -1,16 +1,14 @@
 """MCP server for Memorable.
 
 Exposes tools to Claude Code for memory management:
-- memorable_search: unified search across anchors, sessions, observations, prompts
+- memorable_search: unified search across sessions, observations, prompts
 - memorable_get_status: file counts and health
-- memorable_write_anchor: mid-session memory checkpoint
 - memorable_onboard: first-time setup
 - memorable_update_seed: update seed files
 """
 
 import json
 import shutil
-import socket
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -104,7 +102,6 @@ class MemorableMCP:
         tool_handlers = {
             "memorable_search": self._tool_search,
             "memorable_get_status": self._tool_get_status,
-            "memorable_write_anchor": self._tool_write_anchor,
             "memorable_onboard": self._tool_onboard,
             "memorable_update_seed": self._tool_update_seed,
         }
@@ -128,7 +125,7 @@ class MemorableMCP:
     # ── Tool Implementations ──────────────────────────────────
 
     def _tool_search(self, args: dict) -> str:
-        """Unified search across anchors, sessions, observations, prompts."""
+        """Unified search across sessions, observations, prompts."""
         query = args.get("query", "").strip()
         if not query:
             return "Please provide a search query."
@@ -141,9 +138,6 @@ class MemorableMCP:
         query_lower = query.lower()
         results = []
 
-        if not filter_type or filter_type == "anchor":
-            results.extend(self._search_jsonl_dir("anchors", query_lower, cutoff))
-
         if not filter_type or filter_type == "session":
             results.extend(self._search_sessions(query_lower, cutoff))
 
@@ -152,6 +146,9 @@ class MemorableMCP:
 
         if not filter_type or filter_type == "prompt":
             results.extend(self._search_jsonl_dir("prompts", query_lower, cutoff))
+
+        if not filter_type or filter_type == "note":
+            results.extend(self._search_jsonl_dir("notes", query_lower, cutoff))
 
         # Sort by timestamp descending, deduplicate
         results.sort(key=lambda r: r.get("ts", ""), reverse=True)
@@ -182,16 +179,16 @@ class MemorableMCP:
         """System status: count files and lines."""
         seed_count = len(list(SEEDS_DIR.glob("*.md"))) if SEEDS_DIR.exists() else 0
 
-        anchor_count = self._count_jsonl_dir("anchors")
         session_dir = DATA_DIR / "sessions"
         session_count = len(list(session_dir.glob("*.json"))) if session_dir.exists() else 0
         obs_count = self._count_jsonl_dir("observations")
         prompt_count = self._count_jsonl_dir("prompts")
+        notes_count = self._count_jsonl_dir("notes")
 
         lines = [
             "## Memorable System Status\n",
             f"- Seeds: {seed_count} (identity files)",
-            f"- Anchors: {anchor_count}",
+            f"- Notes: {notes_count} (session-end LLM notes)",
             f"- Sessions: {session_count}",
             f"- Observations: {obs_count}",
             f"- Prompts: {prompt_count}",
@@ -255,15 +252,6 @@ class MemorableMCP:
 
     def _entry_text(self, entry: dict, source_type: str) -> str:
         """Extract display text from a JSONL entry based on its type."""
-        if source_type == "anchor":
-            parts = []
-            if entry.get("summary"):
-                parts.append(entry["summary"])
-            if entry.get("decisions"):
-                parts.append(f"Decisions: {', '.join(entry['decisions'])}")
-            if entry.get("open_threads"):
-                parts.append(f"Threads: {', '.join(entry['open_threads'])}")
-            return " | ".join(parts) if parts else json.dumps(entry)
         if source_type == "observation":
             tool = entry.get("tool", "")
             summary = entry.get("summary", "")
@@ -274,7 +262,15 @@ class MemorableMCP:
             return text
         if source_type == "prompt":
             return entry.get("prompt", "")
-        return entry.get("summary", entry.get("prompt", json.dumps(entry)))
+        if source_type == "note":
+            note = entry.get("note", "")
+            # Return just the first line (Summary section) for search results
+            for line in note.split("\n"):
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    return line[:200]
+            return note[:200]
+        return entry.get("note", entry.get("summary", entry.get("prompt", json.dumps(entry))))
 
     def _normalize_ts(self, ts) -> str:
         """Convert any timestamp format to ISO string for consistent sorting."""
@@ -314,46 +310,6 @@ class MemorableMCP:
             except OSError:
                 continue
         return count
-
-    # ── Anchor & Seed Tools ───────────────────────────────────
-
-    def _tool_write_anchor(self, args: dict) -> str:
-        """Write an anchor — a mid-session memory checkpoint."""
-        summary = args.get("summary", "").strip()
-        if not summary:
-            return "Error: summary is required."
-
-        mood = args.get("mood", "")
-        decisions = args.get("decisions", [])
-        open_threads = args.get("open_threads", [])
-        session_id = args.get("session_id", "unknown")
-
-        # Get machine_id
-        machine_id = self.config.get("machine_id")
-        if not machine_id:
-            machine_id = socket.gethostname()
-
-        anchors_dir = DATA_DIR / "anchors"
-        anchors_dir.mkdir(parents=True, exist_ok=True)
-        anchor_file = anchors_dir / f"{machine_id}.jsonl"
-
-        entry = {
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "session": session_id,
-            "summary": summary,
-            "machine": machine_id,
-        }
-        if mood:
-            entry["mood"] = mood
-        if decisions:
-            entry["decisions"] = decisions
-        if open_threads:
-            entry["open_threads"] = open_threads
-
-        with open(anchor_file, "a") as f:
-            f.write(json.dumps(entry) + "\n")
-
-        return "Anchor saved."
 
     # ── Seed Tools ─────────────────────────────────────────────
 
@@ -455,7 +411,7 @@ class MemorableMCP:
 TOOLS = [
     {
         "name": "memorable_search",
-        "description": "Search across all memory: anchors (session summaries with decisions/threads), sessions, observations (tool usage), and user prompts. Use for 'when did we discuss X', 'what happened with Y', or 'when did I say Z'.",
+        "description": "Search across all memory: sessions, notes (session-end summaries), observations (tool usage), and user prompts. Use for 'when did we discuss X', 'what happened with Y', or 'when did I say Z'.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -466,7 +422,7 @@ TOOLS = [
                 "type": {
                     "type": "string",
                     "description": "Filter to a specific source type",
-                    "enum": ["anchor", "session", "observation", "prompt"],
+                    "enum": ["session", "note", "observation", "prompt"],
                 },
                 "days_back": {
                     "type": "integer",
@@ -484,38 +440,10 @@ TOOLS = [
     },
     {
         "name": "memorable_get_status",
-        "description": "Get Memorable system status: counts of seeds, anchors, sessions, observations, and prompts.",
+        "description": "Get Memorable system status: counts of seeds, sessions, observations, and prompts.",
         "inputSchema": {
             "type": "object",
             "properties": {},
-        },
-    },
-    {
-        "name": "memorable_write_anchor",
-        "description": "Write an anchor — a mid-session memory checkpoint. Call this when prompted by the [Memorable] anchor reminder. Summarize what's happened since the last anchor.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "summary": {
-                    "type": "string",
-                    "description": "Brief summary of conversation since last anchor point",
-                },
-                "mood": {
-                    "type": "string",
-                    "description": "Current emotional register (e.g., 'focused', 'frustrated', 'playful')",
-                },
-                "decisions": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Key decisions made since last anchor",
-                },
-                "open_threads": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Things left unfinished or still in progress",
-                },
-            },
-            "required": ["summary"],
         },
     },
     {
@@ -538,7 +466,7 @@ TOOLS = [
     },
     {
         "name": "memorable_update_seed",
-        "description": "Update a seed file. Three files: the user's file (pass 'user' or their name) for identity/people/projects, 'claude' for behavioral instructions, and 'now' for current state snapshot. Rewrite now.md alongside every anchor.",
+        "description": "Update a seed file. Three files: the user's file (pass 'user' or their name) for identity/people/projects, 'claude' for behavioral instructions, and 'now' for current state snapshot.",
         "inputSchema": {
             "type": "object",
             "properties": {

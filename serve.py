@@ -22,11 +22,12 @@ class Handler(SimpleHTTPRequestHandler):
 
     def send_data(self):
         entries = []
-        for subdir, _type in [("observations", "observation"), ("prompts", "prompt"), ("anchors", "anchor")]:
+        for subdir, _type in [("observations", "observation"), ("prompts", "prompt"), ("anchors", "anchor"), ("summaries", "summary")]:
             d = DATA_DIR / subdir
             if not d.exists():
                 continue
             for f in d.glob("*.jsonl"):
+                machine = f.stem  # e.g. "Matts-MacBook-Pro-4.local"
                 for line in f.read_text().splitlines():
                     line = line.strip()
                     if not line:
@@ -34,6 +35,7 @@ class Handler(SimpleHTTPRequestHandler):
                     try:
                         obj = json.loads(line)
                         obj["_type"] = _type
+                        obj["_machine"] = obj.get("machine", machine)
                         entries.append(obj)
                     except json.JSONDecodeError:
                         pass
@@ -50,6 +52,7 @@ class Handler(SimpleHTTPRequestHandler):
                 try:
                     obj = json.loads(line)
                     obj["_type"] = _type
+                    obj["_machine"] = obj.get("machine", "unknown")
                     entries.append(obj)
                 except json.JSONDecodeError:
                     pass

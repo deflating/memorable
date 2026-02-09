@@ -236,6 +236,58 @@
 
 
   /* ============================================================
+     Machine tabs
+     ============================================================ */
+
+  .machine-tabs {
+    display: flex;
+    gap: 2px;
+    padding: 0 24px;
+    background: rgba(30, 25, 20, 0.85);
+    backdrop-filter: blur(16px) saturate(1.4);
+    -webkit-backdrop-filter: blur(16px) saturate(1.4);
+    border-bottom: 1px solid var(--border-subtle);
+    position: sticky;
+    top: 52px;
+    z-index: 99;
+  }
+
+  .machine-tab {
+    padding: 8px 16px;
+    font-size: 11px;
+    font-family: var(--mono);
+    font-weight: 500;
+    color: var(--text-muted);
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+    letter-spacing: 0.3px;
+  }
+
+  .machine-tab:hover {
+    color: var(--text-secondary);
+  }
+
+  .machine-tab.active {
+    color: var(--anchor-accent);
+    border-bottom-color: var(--anchor-accent);
+  }
+
+  .machine-tab .tab-count {
+    font-size: 9px;
+    color: var(--text-faint);
+    margin-left: 4px;
+  }
+
+  .machine-tab.active .tab-count {
+    color: var(--anchor-accent);
+    opacity: 0.6;
+  }
+
+
+  /* ============================================================
      Feed container
      ============================================================ */
 
@@ -705,6 +757,8 @@
     .feed { padding: 12px 14px 60px; }
     .card { padding: 16px 18px; }
     .header { padding: 0 14px; gap: 10px; }
+    .machine-tabs { padding: 0 14px; }
+    .machine-tab { padding: 6px 12px; font-size: 10px; }
     .search-input { width: 140px; font-size: 13px; }
     .search-input:focus { width: 180px; }
     .live-label { display: none; }
@@ -739,6 +793,8 @@
   </div>
 </header>
 
+<nav class="machine-tabs" id="machineTabs"></nav>
+
 <main class="feed" id="feed">
   <div class="loading-skeleton">
     <div class="skeleton-card">
@@ -769,6 +825,7 @@
   let isFirstLoad = true;
   let pollErrors = 0;
   let scrollLocked = false;
+  let activeMachine = 'all';
 
   // ── DOM refs ───────────────────────────────────────────────
   const feed = document.getElementById('feed');
@@ -778,6 +835,45 @@
   const searchClear = document.getElementById('searchClear');
   const liveDot = document.getElementById('liveDot');
   const liveLabel = document.getElementById('liveLabel');
+  const machineTabs = document.getElementById('machineTabs');
+
+  // ── Machine name helpers ──────────────────────────────────
+  function friendlyMachine(id) {
+    if (!id) return 'Unknown';
+    const lower = id.toLowerCase();
+    if (lower.includes('mac-mini') || lower.includes('macmini')) return 'Mac Mini';
+    if (lower.includes('macbook')) return 'MacBook';
+    // Strip .local suffix, replace hyphens
+    return id.replace(/\.local$/, '').replace(/-/g, ' ');
+  }
+
+  function renderTabs() {
+    const machines = [...new Set(entries.map(e => e._machine).filter(Boolean))];
+    if (machines.length <= 1) {
+      machineTabs.style.display = 'none';
+      return;
+    }
+    machineTabs.style.display = 'flex';
+
+    const counts = { all: entries.length };
+    for (const m of machines) {
+      counts[m] = entries.filter(e => e._machine === m).length;
+    }
+
+    let html = `<button class="machine-tab${activeMachine === 'all' ? ' active' : ''}" data-machine="all">All<span class="tab-count">${counts.all}</span></button>`;
+    for (const m of machines.sort()) {
+      html += `<button class="machine-tab${activeMachine === m ? ' active' : ''}" data-machine="${esc(m)}">${esc(friendlyMachine(m))}<span class="tab-count">${counts[m]}</span></button>`;
+    }
+    machineTabs.innerHTML = html;
+
+    machineTabs.querySelectorAll('.machine-tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        activeMachine = btn.dataset.machine;
+        renderTabs();
+        render();
+      });
+    });
+  }
 
   // ── Search ─────────────────────────────────────────────────
   let searchDebounce = null;
@@ -835,6 +931,7 @@
       if (hash !== renderedHash) {
         entries = data;
         renderedHash = hash;
+        renderTabs();
         render();
       }
 
@@ -878,15 +975,18 @@
   // ── Render ─────────────────────────────────────────────────
   function render() {
     const query = searchInput.value.toLowerCase().trim();
+    const machineFiltered = activeMachine === 'all'
+      ? entries
+      : entries.filter(e => e._machine === activeMachine);
     const filtered = query
-      ? entries.filter(e => matchesSearch(e, query))
-      : entries;
+      ? machineFiltered.filter(e => matchesSearch(e, query))
+      : machineFiltered;
 
     // Update stats
     if (query) {
-      stats.textContent = `${filtered.length} of ${entries.length}`;
+      stats.textContent = `${filtered.length} of ${machineFiltered.length}`;
     } else {
-      stats.textContent = `${entries.length} entries`;
+      stats.textContent = `${machineFiltered.length} entries`;
     }
 
     // Empty / no results states
