@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """PreCompact hook for Memorable.
 
-Before context compaction, remind Claude that session data is captured automatically.
+Before context compaction, point Claude to anchors for post-compaction recovery.
 """
 
 import json
 import sys
+from pathlib import Path
+
+DATA_DIR = Path.home() / ".memorable" / "data"
 
 
 def main():
@@ -15,10 +18,13 @@ def main():
         except (json.JSONDecodeError, EOFError):
             hook_input = {}
 
-        print(
-            "[Memorable] Context compaction incoming. "
-            "Session data is captured automatically — no action needed."
-        )
+        anchors_dir = DATA_DIR / "anchors"
+        lines = [
+            "[Memorable] Context compaction incoming.",
+            f"After compaction, re-establish context by reading anchors in {anchors_dir}/",
+            "Also re-read seed files: ~/.memorable/data/seeds/matt.md, claude.md, now.md",
+        ]
+        print("\n".join(lines))
 
     except Exception:
         pass

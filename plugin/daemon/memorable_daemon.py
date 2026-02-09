@@ -41,7 +41,9 @@ AFM_PROMPT = """Read this conversation excerpt. Fill in each field precisely.
 
 TOPIC: [Main subject, max 10 words]
 DOING: [Current task/action, max 10 words]
+NEXT: [What's about to happen next, or 'unclear']
 DECIDED: [Any choice made, or 'none']
+BLOCKED: [Any error or blocker stopping progress, or 'none']
 MOOD: [One word]
 UNRESOLVED: [Open question or unfinished item, or 'none']
 KEYWORDS: [5-8 important nouns/names from the messages, comma separated]
@@ -51,10 +53,13 @@ Conversation:
 {chunk_text}"""
 
 
+FILE_TOOLS = {"Read", "Edit", "Write", "Glob", "Grep"}
+
+
 def parse_afm_output(text: str) -> dict:
     """Parse AFM structured output into a dict."""
     fields = {}
-    for label in ("TOPIC", "DOING", "DECIDED", "MOOD", "UNRESOLVED", "KEYWORDS", "QUOTE"):
+    for label in ("TOPIC", "DOING", "NEXT", "DECIDED", "BLOCKED", "MOOD", "UNRESOLVED", "KEYWORDS", "QUOTE"):
         match = re.search(rf'{label}:\s*(.+)', text)
         if match:
             value = match.group(1).strip()
@@ -63,6 +68,43 @@ def parse_afm_output(text: str) -> dict:
             else:
                 fields[label.lower()] = value
     return fields
+
+
+def extract_mechanical_metadata(chunk) -> dict:
+    """Extract file paths, commands, and human messages mechanically from the chunk."""
+    meta = {}
+
+    # Unique file paths from file-related tool calls
+    files = []
+    seen_files = set()
+    for tc in chunk.tool_calls:
+        if tc["tool"] in FILE_TOOLS and tc["target"]:
+            path = tc["target"]
+            if path not in seen_files:
+                seen_files.add(path)
+                files.append(path)
+    if files:
+        meta["files"] = files
+
+    # Bash commands (trimmed)
+    commands = []
+    for tc in chunk.tool_calls:
+        if tc["tool"] == "Bash" and tc["target"]:
+            commands.append(tc["target"][:100])
+    if commands:
+        meta["commands"] = commands[:10]
+
+    # All human messages, compressed
+    human_msgs = []
+    for msg in chunk.messages:
+        if msg.get("role") == "user" and msg.get("is_human"):
+            text = msg["text"][:80].replace("\n", " ").strip()
+            if text:
+                human_msgs.append(text)
+    if human_msgs:
+        meta["human_messages"] = human_msgs
+
+    return meta
 
 
 class MemorableDaemon:
@@ -120,11 +162,15 @@ class MemorableDaemon:
             logger.warning("AFM output missing TOPIC, skipping")
             return
 
+        # Mechanical metadata — free, no AFM needed
+        mechanical = extract_mechanical_metadata(chunk)
+
         entry = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "session": session_id,
             "chunk": chunk.chunk_number,
             **fields,
+            **mechanical,
         }
 
         # Append to per-machine JSONL
