@@ -118,8 +118,7 @@ def main():
             print(
                 "[Memorable] Time to write an Anchor.\n\n"
                 "You are writing an Anchor. Anchors are in-the-moment reflections that "
-                "help a future session resume naturally. They are allowed to be reflective "
-                "and descriptive, but must remain provisional. Write as if you are pausing "
+                "help a future session resume naturally. Write as if you are pausing "
                 "mid-walk to leave yourself a note about where you are and what the terrain "
                 "feels like. Allow the context of the session to influence the type of "
                 "information you capture.\n\n"

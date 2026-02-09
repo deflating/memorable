@@ -1,0 +1,1183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Memorable</title>
+<style>
+  /* ============================================================
+     Memorable Viewer — warm earthy dark theme
+     ============================================================ */
+
+  :root {
+    /* Dark walnut / cabin at night */
+    --bg:              #1e1914;
+    --bg-elevated:     #271f19;
+    --bg-card:         #2c2319;
+    --bg-card-hover:   #352a1e;
+    --bg-inset:        #1a1510;
+
+    --text:            #e8ddd0;
+    --text-secondary:  #c4b5a2;
+    --text-muted:      #8a7862;
+    --text-faint:      #6a5a46;
+
+    --border:          #443828;
+    --border-subtle:   #3a2e20;
+
+    /* Observations — warm copper/bronze */
+    --obs-border:      #8a6840;
+    --obs-bg:          #2a2116;
+    --obs-accent:      #c49a5c;
+    --obs-badge-bg:    rgba(196, 154, 92, 0.12);
+
+    /* Prompts — warm rose/terracotta */
+    --prompt-border:   #8a5044;
+    --prompt-bg:       #2a1e1a;
+    --prompt-accent:   #d4887a;
+    --prompt-badge-bg: rgba(212, 136, 122, 0.10);
+
+    /* Anchors — candlelight gold */
+    --anchor-border:   #8a7840;
+    --anchor-bg:       #2a2618;
+    --anchor-accent:   #dbc078;
+    --anchor-title:    #dbc078;
+    --anchor-badge-bg: rgba(219, 192, 120, 0.10);
+
+    --green:           #8ab560;
+    --green-glow:      rgba(138, 181, 96, 0.35);
+
+    --mono: 'Monaspace Radon', 'SF Mono', Monaco, Menlo, 'Courier New', monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+
+    --card-radius:     10px;
+    --feed-width:      650px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html {
+    scroll-behavior: smooth;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+
+  /* Subtle background texture — warm noise */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    opacity: 0.015;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  ::selection {
+    background: rgba(219, 192, 120, 0.3);
+    color: var(--text);
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+
+  /* ============================================================
+     Header — sticky frosted glass
+     ============================================================ */
+
+  .header {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    padding: 0 24px;
+    height: 52px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    background: rgba(30, 25, 20, 0.85);
+    backdrop-filter: blur(16px) saturate(1.4);
+    -webkit-backdrop-filter: blur(16px) saturate(1.4);
+    border-bottom: 1px solid var(--border-subtle);
+    transition: box-shadow 0.3s ease;
+  }
+
+  .header.scrolled {
+    box-shadow: 0 1px 12px rgba(0, 0, 0, 0.3);
+  }
+
+  .header-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+  }
+
+  .header-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+    letter-spacing: -0.02em;
+  }
+
+  .live-indicator {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .live-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 6px var(--green-glow);
+    animation: pulse-dot 2.5s ease-in-out infinite;
+  }
+
+  .live-dot.disconnected {
+    background: #c45a3a;
+    box-shadow: 0 0 6px rgba(196, 90, 58, 0.35);
+    animation: none;
+  }
+
+  .live-label {
+    font-size: 10px;
+    font-family: var(--mono);
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .header-stats {
+    font-size: 11px;
+    font-family: var(--mono);
+    color: var(--text-faint);
+    flex-shrink: 0;
+  }
+
+  .header-spacer { flex: 1; }
+
+  .search-container {
+    position: relative;
+    flex-shrink: 0;
+  }
+
+  .search-icon {
+    position: absolute;
+    left: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-faint);
+    font-size: 13px;
+    pointer-events: none;
+    transition: color 0.2s;
+  }
+
+  .search-input {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    color: var(--text);
+    padding: 6px 12px 6px 32px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-family: var(--sans);
+    width: 220px;
+    outline: none;
+    transition: border-color 0.2s, background 0.2s, width 0.3s;
+  }
+
+  .search-input::placeholder {
+    color: var(--text-faint);
+  }
+
+  .search-input:focus {
+    border-color: var(--anchor-accent);
+    background: var(--bg-card);
+    width: 280px;
+  }
+
+  .search-input:focus + .search-icon {
+    color: var(--anchor-accent);
+  }
+
+  .search-clear {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 14px;
+    padding: 2px;
+    line-height: 1;
+    display: none;
+    border-radius: 4px;
+    transition: color 0.15s;
+  }
+
+  .search-clear:hover { color: var(--text); }
+  .search-clear.visible { display: block; }
+
+
+  /* ============================================================
+     Feed container
+     ============================================================ */
+
+  .feed {
+    max-width: var(--feed-width);
+    margin: 0 auto;
+    padding: 20px 24px 80px;
+    position: relative;
+    z-index: 1;
+  }
+
+
+  /* ============================================================
+     Day headers
+     ============================================================ */
+
+  .day-header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 28px 0 16px;
+  }
+
+  .day-header:first-child {
+    padding-top: 8px;
+  }
+
+  .day-header-line {
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(to right, var(--border), transparent);
+  }
+
+  .day-header-line:last-child {
+    background: linear-gradient(to left, var(--border), transparent);
+  }
+
+  .day-header-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    font-family: var(--mono);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+
+  /* ============================================================
+     Session dividers
+     ============================================================ */
+
+  .session-divider {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 16px 0 10px;
+  }
+
+  .session-divider-line {
+    flex: 1;
+    height: 1px;
+    border-top: 1px dashed var(--border-subtle);
+  }
+
+  .session-divider-label {
+    font-size: 10px;
+    font-family: var(--mono);
+    color: var(--text-faint);
+    letter-spacing: 0.4px;
+    padding: 2px 8px;
+    background: var(--bg-elevated);
+    border-radius: 4px;
+    border: 1px solid var(--border-subtle);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+
+  /* ============================================================
+     Cards — shared base
+     ============================================================ */
+
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--card-radius);
+    padding: 20px 24px;
+    margin-bottom: 14px;
+    transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+    position: relative;
+  }
+
+  .card.animate-in {
+    animation: cardSlideIn 0.35s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  }
+
+  .card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  }
+
+  .card-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+    min-height: 22px;
+  }
+
+  .card-badge {
+    font-size: 9.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    padding: 3px 8px;
+    border-radius: 5px;
+    font-family: var(--mono);
+    line-height: 1;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .card-time {
+    font-size: 11px;
+    color: var(--text-faint);
+    font-family: var(--mono);
+    margin-left: auto;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .card-body {
+    color: var(--text-secondary);
+    font-size: 13.5px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+
+  /* ============================================================
+     Observation cards
+     ============================================================ */
+
+  .card-obs {
+    border-left: 3px solid var(--obs-border);
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .card-obs:hover {
+    border-color: var(--obs-accent);
+  }
+
+  .card-obs .card-badge {
+    background: var(--obs-badge-bg);
+    color: var(--obs-accent);
+  }
+
+  .card-tool {
+    font-weight: 600;
+    color: var(--obs-accent);
+    font-size: 13px;
+  }
+
+  .card-file {
+    color: var(--green);
+    font-size: 11.5px;
+    font-family: var(--mono);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 300px;
+  }
+
+  .card-expand-hint {
+    color: var(--text-faint);
+    font-size: 11px;
+    font-family: var(--mono);
+    transition: opacity 0.2s;
+    opacity: 0;
+    margin-left: 4px;
+    flex-shrink: 0;
+  }
+
+  .card-obs:hover .card-expand-hint {
+    opacity: 1;
+  }
+
+  .card-detail {
+    overflow: hidden;
+    max-height: 0;
+    opacity: 0;
+    transition: max-height 0.35s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.25s ease, margin 0.25s ease, padding 0.25s ease;
+    margin-top: 0;
+    padding: 0 12px;
+    background: var(--bg-inset);
+    border-radius: 6px;
+    border: 1px solid transparent;
+    font-size: 11.5px;
+    font-family: var(--mono);
+    color: var(--text-muted);
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.55;
+  }
+
+  .card-obs.expanded .card-detail {
+    max-height: 300px;
+    opacity: 1;
+    margin-top: 12px;
+    padding: 12px;
+    border-color: var(--border-subtle);
+    overflow-y: auto;
+  }
+
+  .card-obs.expanded .card-expand-hint {
+    opacity: 1;
+  }
+
+  .detail-section-label {
+    display: block;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-faint);
+    margin-bottom: 4px;
+    margin-top: 10px;
+  }
+
+  .detail-section-label:first-child {
+    margin-top: 0;
+  }
+
+
+  /* ============================================================
+     Prompt cards
+     ============================================================ */
+
+  .card-prompt {
+    border-left: 3px solid var(--prompt-border);
+    background: var(--prompt-bg);
+  }
+
+  .card-prompt:hover {
+    border-color: var(--prompt-accent);
+    background: #322420;
+  }
+
+  .card-prompt .card-badge {
+    background: var(--prompt-badge-bg);
+    color: var(--prompt-accent);
+  }
+
+  .card-prompt .card-body {
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.65;
+  }
+
+  .prompt-chars {
+    font-size: 10px;
+    font-family: var(--mono);
+    color: var(--text-faint);
+  }
+
+
+  /* ============================================================
+     Anchor cards — the special ones
+     ============================================================ */
+
+  .card-anchor {
+    border: 1px solid var(--anchor-border);
+    border-left: 3px solid var(--anchor-accent);
+    background: var(--anchor-bg);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .card-anchor::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(to right, var(--anchor-accent), transparent 70%);
+    opacity: 0.4;
+  }
+
+  .card-anchor:hover {
+    border-color: var(--anchor-accent);
+    background: #332c1e;
+    box-shadow: 0 4px 20px rgba(219, 192, 120, 0.08);
+  }
+
+  .card-anchor .card-badge {
+    background: var(--anchor-badge-bg);
+    color: var(--anchor-accent);
+    border: 1px solid rgba(219, 192, 120, 0.18);
+  }
+
+  .card-anchor .card-body {
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.7;
+  }
+
+  .anchor-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 14px;
+  }
+
+  .anchor-tag {
+    font-size: 10px;
+    font-family: var(--mono);
+    padding: 3px 10px;
+    border-radius: 5px;
+    background: var(--bg-inset);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-muted);
+    line-height: 1.3;
+  }
+
+  .anchor-tag.mood {
+    border-color: rgba(219, 192, 120, 0.35);
+    color: var(--anchor-accent);
+    background: rgba(219, 192, 120, 0.08);
+  }
+
+  .anchor-tag.decision {
+    border-color: rgba(138, 181, 96, 0.25);
+    color: #a0c878;
+    background: rgba(138, 181, 96, 0.06);
+  }
+
+  .anchor-tag.thread {
+    border-color: rgba(219, 192, 120, 0.18);
+    color: var(--text-muted);
+  }
+
+  .anchor-section-label {
+    font-size: 9px;
+    font-family: var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-faint);
+    margin-top: 14px;
+    margin-bottom: 6px;
+  }
+
+
+  /* ============================================================
+     States: loading, empty, error
+     ============================================================ */
+
+  .state-message {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 80px 24px;
+    text-align: center;
+  }
+
+  .state-icon {
+    font-size: 36px;
+    margin-bottom: 16px;
+    opacity: 0.5;
+  }
+
+  .state-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+  }
+
+  .state-subtitle {
+    font-size: 13px;
+    color: var(--text-muted);
+    max-width: 300px;
+    line-height: 1.5;
+  }
+
+  .loading-skeleton {
+    padding: 20px 0;
+  }
+
+  .skeleton-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--card-radius);
+    padding: 20px 24px;
+    margin-bottom: 14px;
+    animation: skeletonPulse 1.8s ease-in-out infinite;
+  }
+
+  .skeleton-line {
+    height: 12px;
+    background: var(--bg-elevated);
+    border-radius: 4px;
+    margin-bottom: 10px;
+  }
+
+  .skeleton-line.short { width: 40%; }
+  .skeleton-line.medium { width: 70%; }
+  .skeleton-line.long { width: 90%; }
+  .skeleton-line:last-child { margin-bottom: 0; }
+
+
+  /* ============================================================
+     Search results context
+     ============================================================ */
+
+  .search-status {
+    text-align: center;
+    padding: 12px 0 4px;
+    font-size: 12px;
+    color: var(--text-muted);
+    font-family: var(--mono);
+  }
+
+  mark {
+    background: rgba(219, 192, 120, 0.25);
+    color: var(--anchor-accent);
+    border-radius: 2px;
+    padding: 0 2px;
+  }
+
+
+  /* ============================================================
+     Animations
+     ============================================================ */
+
+  @keyframes cardSlideIn {
+    from {
+      opacity: 0;
+      transform: translateY(-8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; box-shadow: 0 0 6px var(--green-glow); }
+    50% { opacity: 0.4; box-shadow: 0 0 2px var(--green-glow); }
+  }
+
+  @keyframes skeletonPulse {
+    0%, 100% { opacity: 0.6; }
+    50% { opacity: 0.3; }
+  }
+
+
+  /* ============================================================
+     Responsive
+     ============================================================ */
+
+  @media (max-width: 700px) {
+    .feed { padding: 12px 14px 60px; }
+    .card { padding: 16px 18px; }
+    .header { padding: 0 14px; gap: 10px; }
+    .search-input { width: 140px; font-size: 13px; }
+    .search-input:focus { width: 180px; }
+    .live-label { display: none; }
+    .header-stats { display: none; }
+    .card-file { max-width: 160px; }
+  }
+
+  @media (max-width: 400px) {
+    .search-input { width: 110px; }
+    .search-input:focus { width: 140px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="header" id="header">
+  <div class="header-brand">
+    <h1 class="header-title">Memorable</h1>
+  </div>
+  <div class="live-indicator">
+    <div class="live-dot" id="liveDot"></div>
+    <span class="live-label" id="liveLabel">live</span>
+  </div>
+  <span class="header-stats" id="stats"></span>
+  <div class="header-spacer"></div>
+  <div class="search-container">
+    <input type="text" class="search-input" id="search" placeholder="Search entries..." autocomplete="off" spellcheck="false">
+    <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+    </svg>
+    <button class="search-clear" id="searchClear" aria-label="Clear search">&times;</button>
+  </div>
+</header>
+
+<main class="feed" id="feed">
+  <div class="loading-skeleton">
+    <div class="skeleton-card">
+      <div class="skeleton-line short"></div>
+      <div class="skeleton-line long"></div>
+      <div class="skeleton-line medium"></div>
+    </div>
+    <div class="skeleton-card">
+      <div class="skeleton-line short"></div>
+      <div class="skeleton-line medium"></div>
+    </div>
+    <div class="skeleton-card">
+      <div class="skeleton-line short"></div>
+      <div class="skeleton-line long"></div>
+      <div class="skeleton-line long"></div>
+      <div class="skeleton-line medium"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+(() => {
+  'use strict';
+
+  // ── State ──────────────────────────────────────────────────
+  let entries = [];
+  let renderedHash = '';
+  let isFirstLoad = true;
+  let pollErrors = 0;
+  let scrollLocked = false;
+
+  // ── DOM refs ───────────────────────────────────────────────
+  const feed = document.getElementById('feed');
+  const stats = document.getElementById('stats');
+  const header = document.getElementById('header');
+  const searchInput = document.getElementById('search');
+  const searchClear = document.getElementById('searchClear');
+  const liveDot = document.getElementById('liveDot');
+  const liveLabel = document.getElementById('liveLabel');
+
+  // ── Search ─────────────────────────────────────────────────
+  let searchDebounce = null;
+  searchInput.addEventListener('input', () => {
+    searchClear.classList.toggle('visible', searchInput.value.length > 0);
+    clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(() => render(), 120);
+  });
+
+  searchClear.addEventListener('click', () => {
+    searchInput.value = '';
+    searchClear.classList.remove('visible');
+    render();
+    searchInput.focus();
+  });
+
+  // ── Keyboard shortcut: / to focus search ───────────────────
+  document.addEventListener('keydown', (e) => {
+    if (e.key === '/' && document.activeElement !== searchInput) {
+      e.preventDefault();
+      searchInput.focus();
+    }
+    if (e.key === 'Escape' && document.activeElement === searchInput) {
+      searchInput.blur();
+      if (searchInput.value) {
+        searchInput.value = '';
+        searchClear.classList.remove('visible');
+        render();
+      }
+    }
+  });
+
+  // ── Header scroll shadow ───────────────────────────────────
+  let ticking = false;
+  window.addEventListener('scroll', () => {
+    if (!ticking) {
+      requestAnimationFrame(() => {
+        header.classList.toggle('scrolled', window.scrollY > 4);
+        ticking = false;
+      });
+      ticking = true;
+    }
+  });
+
+  // ── Data loading ───────────────────────────────────────────
+  async function loadData() {
+    try {
+      const res = await fetch('/api/data');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      data.sort((a, b) => String(a.ts || '').localeCompare(String(b.ts || '')));
+
+      // Check if data actually changed
+      const hash = data.length + ':' + (data.length > 0 ? data[data.length - 1].ts : '');
+      if (hash !== renderedHash) {
+        entries = data;
+        renderedHash = hash;
+        render();
+      }
+
+      // Connection OK
+      pollErrors = 0;
+      liveDot.classList.remove('disconnected');
+      liveLabel.textContent = 'live';
+    } catch (err) {
+      pollErrors++;
+      if (pollErrors >= 2) {
+        liveDot.classList.add('disconnected');
+        liveLabel.textContent = 'offline';
+      }
+      if (isFirstLoad) {
+        feed.innerHTML = renderState('!', 'Connection failed', err.message);
+      }
+    }
+    isFirstLoad = false;
+  }
+
+  // ── Scroll position preservation ───────────────────────────
+  function preserveScroll(fn) {
+    // If user is scrolled down, preserve their position relative to the bottom
+    const scrollTop = window.scrollY;
+    const docHeight = document.documentElement.scrollHeight;
+    const viewHeight = window.innerHeight;
+    const isAtTop = scrollTop < 10;
+
+    fn();
+
+    if (!isAtTop && !isFirstLoad) {
+      // Content was added at top, maintain visual position
+      const newDocHeight = document.documentElement.scrollHeight;
+      const delta = newDocHeight - docHeight;
+      if (delta > 0) {
+        window.scrollTo(0, scrollTop + delta);
+      }
+    }
+  }
+
+  // ── Render ─────────────────────────────────────────────────
+  function render() {
+    const query = searchInput.value.toLowerCase().trim();
+    const filtered = query
+      ? entries.filter(e => matchesSearch(e, query))
+      : entries;
+
+    // Update stats
+    if (query) {
+      stats.textContent = `${filtered.length} of ${entries.length}`;
+    } else {
+      stats.textContent = `${entries.length} entries`;
+    }
+
+    // Empty / no results states
+    if (entries.length === 0 && !isFirstLoad) {
+      feed.innerHTML = renderState(
+        '\u25CB', 'No entries yet',
+        'Memorable is watching. Entries will appear here as Claude works.'
+      );
+      return;
+    }
+
+    if (filtered.length === 0 && query) {
+      feed.innerHTML = renderState(
+        '\u2014', 'No matches',
+        'Try a different search term'
+      );
+      return;
+    }
+
+    if (filtered.length === 0) return;
+
+    // Newest first
+    const sorted = [...filtered].reverse();
+
+    preserveScroll(() => {
+      let html = '';
+
+      if (query) {
+        html += `<div class="search-status">${filtered.length} result${filtered.length !== 1 ? 's' : ''} for \u201C${esc(searchInput.value)}\u201D</div>`;
+      }
+
+      let currentDay = '';
+      let currentSession = '';
+
+      for (let i = 0; i < sorted.length; i++) {
+        const e = sorted[i];
+        const d = new Date(e.ts);
+        const day = formatDay(d);
+        const time = formatTime(d);
+        const shouldAnimate = !query && i < 3; // only animate top few on data refresh
+
+        // Day header
+        if (day !== currentDay) {
+          currentDay = day;
+          currentSession = '';
+          html += renderDayHeader(day);
+        }
+
+        // Session divider
+        if (e.session && e.session !== currentSession) {
+          currentSession = e.session;
+          html += renderSessionDivider(e.session);
+        }
+
+        // Card
+        if (e._type === 'prompt') {
+          html += renderPrompt(e, time, query, shouldAnimate);
+        } else if (e._type === 'anchor') {
+          html += renderAnchor(e, time, query, shouldAnimate);
+        } else {
+          html += renderObservation(e, time, query, shouldAnimate);
+        }
+      }
+
+      feed.innerHTML = html;
+    });
+  }
+
+  // ── Card renderers ─────────────────────────────────────────
+
+  function renderPrompt(e, time, query, animate) {
+    const body = query ? highlight(e.prompt || '', query) : esc(e.prompt || '');
+    const chars = e.chars ? `<span class="prompt-chars">${e.chars} chars</span>` : '';
+    return `<div class="card card-prompt${animate ? ' animate-in' : ''}">
+      <div class="card-head">
+        <span class="card-badge">Matt</span>
+        ${chars}
+        <span class="card-time">${time}</span>
+      </div>
+      <div class="card-body">${body}</div>
+    </div>`;
+  }
+
+  function renderAnchor(e, time, query, animate) {
+    const body = query ? highlight(e.summary || '', query) : esc(e.summary || '');
+
+    let metaHtml = '';
+    const hasMeta = e.mood || (e.decisions && e.decisions.length) || (e.open_threads && e.open_threads.length);
+
+    if (hasMeta) {
+      metaHtml += '<div class="anchor-meta">';
+
+      if (e.mood) {
+        metaHtml += `<span class="anchor-tag mood">${esc(e.mood)}</span>`;
+      }
+
+      if (e.decisions && e.decisions.length) {
+        metaHtml += '</div>';
+        metaHtml += '<div class="anchor-section-label">Decisions</div>';
+        metaHtml += '<div class="anchor-meta">';
+        for (const d of e.decisions) {
+          metaHtml += `<span class="anchor-tag decision">${esc(d)}</span>`;
+        }
+      }
+
+      if (e.open_threads && e.open_threads.length) {
+        metaHtml += '</div>';
+        metaHtml += '<div class="anchor-section-label">Open threads</div>';
+        metaHtml += '<div class="anchor-meta">';
+        for (const t of e.open_threads) {
+          metaHtml += `<span class="anchor-tag thread">${esc(t)}</span>`;
+        }
+      }
+
+      metaHtml += '</div>';
+    }
+
+    return `<div class="card card-anchor${animate ? ' animate-in' : ''}">
+      <div class="card-head">
+        <span class="card-badge">Anchor</span>
+        <span class="card-time">${time}</span>
+      </div>
+      <div class="card-body">${body}</div>
+      ${metaHtml}
+    </div>`;
+  }
+
+  function renderObservation(e, time, query, animate) {
+    const obs = parseObs(e);
+    const hasDetail = !!(e.response_preview || e.input);
+    const toolLabel = e.tool || 'Tool';
+    const desc = obs.desc
+      ? (query ? highlight(obs.desc, query) : esc(obs.desc))
+      : '';
+    const filePath = obs.file ? `<span class="card-file" title="${esc(obs.fullFile || obs.file)}">${esc(obs.file)}</span>` : '';
+    const expandHint = hasDetail
+      ? `<span class="card-expand-hint">\u25B8</span>`
+      : '';
+    const detailContent = hasDetail ? buildDetail(e) : '';
+
+    return `<div class="card card-obs${animate ? ' animate-in' : ''}" ${hasDetail ? 'onclick="toggleExpand(this)"' : ''}>
+      <div class="card-head">
+        <span class="card-badge">${esc(toolLabel)}</span>
+        ${filePath}
+        ${expandHint}
+        <span class="card-time">${time}</span>
+      </div>
+      ${desc ? `<div class="card-body">${desc}</div>` : ''}
+      ${hasDetail ? `<div class="card-detail">${detailContent}</div>` : ''}
+    </div>`;
+  }
+
+  // ── Structural renderers ───────────────────────────────────
+
+  function renderDayHeader(day) {
+    return `<div class="day-header">
+      <div class="day-header-line"></div>
+      <span class="day-header-label">${day}</span>
+      <div class="day-header-line"></div>
+    </div>`;
+  }
+
+  function renderSessionDivider(sessionId) {
+    return `<div class="session-divider">
+      <div class="session-divider-line"></div>
+      <span class="session-divider-label">${esc(sessionId.substring(0, 8))}</span>
+      <div class="session-divider-line"></div>
+    </div>`;
+  }
+
+  function renderState(icon, title, subtitle) {
+    return `<div class="state-message">
+      <div class="state-icon">${icon}</div>
+      <div class="state-title">${title}</div>
+      <div class="state-subtitle">${subtitle || ''}</div>
+    </div>`;
+  }
+
+  // ── Helpers ────────────────────────────────────────────────
+
+  function parseObs(e) {
+    const r = { file: '', fullFile: '', desc: '' };
+    if (e.file) {
+      r.fullFile = e.file;
+      r.file = e.file.replace(/^\/Users\/[^/]+\//, '~/');
+    }
+    if (e.summary) {
+      r.desc = e.summary;
+      return r;
+    }
+    if (!e.input) return r;
+    try {
+      const obj = JSON.parse(e.input);
+      if (obj.description) r.desc = obj.description;
+      else if (obj.command) r.desc = obj.command;
+      else if (obj.pattern) r.desc = obj.pattern;
+      else if (obj.query) r.desc = obj.query;
+      else if (obj.prompt) r.desc = obj.prompt.substring(0, 200);
+      else if (obj.file_path && !r.file) {
+        r.fullFile = obj.file_path;
+        r.file = obj.file_path.replace(/^\/Users\/[^/]+\//, '~/');
+      }
+      else if (obj.url) r.desc = obj.url;
+    } catch (err) {}
+    return r;
+  }
+
+  function buildDetail(e) {
+    let parts = [];
+    if (e.input) {
+      let formatted;
+      try { formatted = JSON.stringify(JSON.parse(e.input), null, 2); }
+      catch (err) { formatted = e.input; }
+      parts.push(`<span class="detail-section-label">Input</span>${esc(formatted)}`);
+    }
+    if (e.response_preview) {
+      parts.push(`<span class="detail-section-label">Response</span>${esc(e.response_preview)}`);
+    }
+    return parts.join('');
+  }
+
+  function matchesSearch(e, query) {
+    const fields = [
+      e.prompt, e.summary, e.tool, e.file, e.mood,
+      e.input, e.response_preview, e.session
+    ];
+    if (e.decisions) fields.push(...e.decisions);
+    if (e.open_threads) fields.push(...e.open_threads);
+    return fields.some(f => f && String(f).toLowerCase().includes(query));
+  }
+
+  function highlight(text, query) {
+    if (!query) return esc(text);
+    const escaped = esc(text);
+    const queryEsc = esc(query);
+    // Case-insensitive highlight
+    const regex = new RegExp(`(${escRegex(queryEsc)})`, 'gi');
+    return escaped.replace(regex, '<mark>$1</mark>');
+  }
+
+  function escRegex(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  function formatDay(d) {
+    const now = new Date();
+    const isToday = d.toDateString() === now.toDateString();
+    const yesterday = new Date(now);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const isYesterday = d.toDateString() === yesterday.toDateString();
+
+    if (isToday) return 'Today';
+    if (isYesterday) return 'Yesterday';
+
+    return d.toLocaleDateString('en-AU', {
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short',
+      year: d.getFullYear() !== now.getFullYear() ? 'numeric' : undefined
+    });
+  }
+
+  function formatTime(d) {
+    return d.toLocaleTimeString('en-AU', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true
+    });
+  }
+
+  function esc(s) {
+    if (!s) return '';
+    const el = document.createElement('span');
+    el.textContent = s;
+    return el.innerHTML;
+  }
+
+  // ── Expand/collapse (global, called from onclick) ──────────
+  window.toggleExpand = function(el) {
+    el.classList.toggle('expanded');
+    // Update hint arrow
+    const hint = el.querySelector('.card-expand-hint');
+    if (hint) {
+      hint.textContent = el.classList.contains('expanded') ? '\u25BE' : '\u25B8';
+    }
+  };
+
+  // ── Boot ───────────────────────────────────────────────────
+  loadData();
+  setInterval(loadData, 3000);
+})();
+</script>
+</body>
+</html>
