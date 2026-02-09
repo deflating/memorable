@@ -4,7 +4,7 @@
 Reads seed files and recent anchors to inject startup context.
 
 Two layers:
-1. Seeds — identity, preferences, people, projects (from ~/.memorable/data/seeds/*.md)
+1. Seeds — {user_name}.md + claude.md (from ~/.memorable/data/seeds/)
 2. Anchors — recent in-session summaries (from ~/.memorable/data/anchors/*.jsonl)
 """
 
@@ -21,44 +21,69 @@ ANCHORS_DIR = DATA_DIR / "anchors"
 CONFIG_PATH = Path.home() / ".memorable" / "config.json"
 
 # Rough token budget: seeds get priority, anchors fill the rest
-MAX_SEED_CHARS = 6000
+MAX_SEED_CHARS = 8000
 MAX_ANCHOR_CHARS = 6000
+
+
+def _get_config() -> dict:
+    """Read config file."""
+    try:
+        if CONFIG_PATH.exists():
+            return json.loads(CONFIG_PATH.read_text())
+    except Exception:
+        pass
+    return {}
 
 
 def _get_machine_id() -> str:
     """Read machine_id from config, fall back to hostname."""
-    try:
-        if CONFIG_PATH.exists():
-            config = json.loads(CONFIG_PATH.read_text())
-            if config.get("machine_id"):
-                return config["machine_id"]
-    except Exception:
-        pass
-    return socket.gethostname()
+    mid = _get_config().get("machine_id")
+    return mid if mid else socket.gethostname()
+
+
+def _get_user_name() -> str:
+    """Read user_name from config, fall back to detecting from seed files."""
+    name = _get_config().get("user_name")
+    if name:
+        return name
+    # Fall back: look for any .md that isn't claude.md
+    if SEEDS_DIR.exists():
+        for path in sorted(SEEDS_DIR.glob("*.md")):
+            if path.stem != "claude":
+                return path.stem
+    return ""
 
 
 def _read_seeds() -> str:
-    """Read all seed files and concatenate them."""
+    """Read seed files: user file first, then claude.md."""
     if not SEEDS_DIR.exists():
         return ""
 
     parts = []
-    # Read in a stable order
-    for name in ["identity", "preferences", "people", "projects"]:
-        path = SEEDS_DIR / f"{name}.md"
-        if path.exists():
-            content = path.read_text().strip()
-            # Skip files that are just the template header with no real content
-            lines = [l for l in content.split("\n") if l.strip() and not l.strip().startswith("<!--")]
-            if len(lines) > 1:  # More than just the "# Title" line
-                parts.append(content)
+    user_name = _get_user_name()
 
-    # Also read any extra seed files not in the standard set
-    for path in sorted(SEEDS_DIR.glob("*.md")):
-        if path.stem not in ["identity", "preferences", "people", "projects"]:
-            content = path.read_text().strip()
+    # Read user seed file first
+    if user_name:
+        user_path = SEEDS_DIR / f"{user_name}.md"
+        if user_path.exists():
+            content = user_path.read_text().strip()
             if content:
                 parts.append(content)
+
+    # Then claude.md
+    claude_path = SEEDS_DIR / "claude.md"
+    if claude_path.exists():
+        content = claude_path.read_text().strip()
+        if content:
+            parts.append(content)
+
+    # Any other seed files (future-proofing), excluding now.md (read separately after anchors)
+    if SEEDS_DIR.exists():
+        for path in sorted(SEEDS_DIR.glob("*.md")):
+            if path.stem not in [user_name, "claude", "now"]:
+                content = path.read_text().strip()
+                if content:
+                    parts.append(content)
 
     result = "\n\n".join(parts)
     if len(result) > MAX_SEED_CHARS:
@@ -145,6 +170,16 @@ def _read_anchors(days: int = 5) -> str:
     return "\n".join(parts)
 
 
+def _read_now() -> str:
+    """Read now.md — the rolling current-state snapshot."""
+    now_path = SEEDS_DIR / "now.md"
+    if now_path.exists():
+        content = now_path.read_text().strip()
+        if content:
+            return content
+    return ""
+
+
 def main():
     error_log_path = Path.home() / ".memorable" / "hook-errors.log"
 
@@ -175,6 +210,16 @@ def main():
         except Exception as e:
             with open(error_log_path, "a") as f:
                 f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] session_start: anchors error: {e}\n")
+
+        # ── Layer 3: now.md (current state snapshot) ──────────
+        try:
+            now = _read_now()
+            if now:
+                parts.append("")
+                parts.append(now)
+        except Exception as e:
+            with open(error_log_path, "a") as f:
+                f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] session_start: now error: {e}\n")
 
         if parts:
             print("\n".join(parts))

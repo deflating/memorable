@@ -18,7 +18,27 @@ from .config import Config
 
 DATA_DIR = Path.home() / ".memorable" / "data"
 SEEDS_DIR = DATA_DIR / "seeds"
-VALID_SEED_FILES = {"identity", "preferences", "people", "projects"}
+CONFIG_PATH = Path.home() / ".memorable" / "config.json"
+
+
+def _get_user_name() -> str:
+    """Read user_name from config."""
+    try:
+        if CONFIG_PATH.exists():
+            cfg = json.loads(CONFIG_PATH.read_text())
+            return cfg.get("user_name", "")
+    except Exception:
+        pass
+    return ""
+
+
+def _valid_seed_files() -> set[str]:
+    """Return the set of valid seed file names (without .md)."""
+    user_name = _get_user_name()
+    valid = {"claude", "now"}
+    if user_name:
+        valid.add(user_name)
+    return valid
 
 
 class MemorableMCP:
@@ -376,54 +396,60 @@ class MemorableMCP:
     # ── Seed Tools ─────────────────────────────────────────────
 
     def _tool_onboard(self, args: dict) -> str:
-        """Populate seed files from onboarding info."""
+        """Set up Memorable with user name. Creates {name}.md seed file."""
         SEEDS_DIR.mkdir(parents=True, exist_ok=True)
 
-        name = args.get("name", "").strip()
-        identity = args.get("identity", "").strip()
-        preferences = args.get("preferences", "").strip()
-        people = args.get("people", "").strip()
-        projects = args.get("projects", "").strip()
+        name = args.get("name", "").strip().lower()
+        about = args.get("about", "").strip()
 
-        updated = []
+        if not name:
+            return "Error: 'name' is required. This becomes your seed file name ({name}.md)."
 
-        if name or identity:
-            content = "# Identity\n\n"
-            if name:
-                content += f"**Name:** {name}\n\n"
-            if identity:
-                content += f"{identity}\n"
-            (SEEDS_DIR / "identity.md").write_text(content)
-            updated.append("identity")
+        # Save user_name to config
+        config = {}
+        try:
+            if CONFIG_PATH.exists():
+                config = json.loads(CONFIG_PATH.read_text())
+        except Exception:
+            pass
+        config["user_name"] = name
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CONFIG_PATH.write_text(json.dumps(config, indent=2) + "\n")
 
-        if preferences:
-            content = f"# Preferences\n\n{preferences}\n"
-            (SEEDS_DIR / "preferences.md").write_text(content)
-            updated.append("preferences")
+        # Create user seed file
+        user_file = SEEDS_DIR / f"{name}.md"
+        if about:
+            content = about if about.startswith("#") else f"# {name.capitalize()}\n\n{about}\n"
+            user_file.write_text(content)
+        elif not user_file.exists():
+            user_file.write_text(f"# {name.capitalize()}\n")
 
-        if people:
-            content = f"# People\n\n{people}\n"
-            (SEEDS_DIR / "people.md").write_text(content)
-            updated.append("people")
+        # Create claude.md if it doesn't exist
+        claude_file = SEEDS_DIR / "claude.md"
+        if not claude_file.exists():
+            claude_file.write_text("# Claude\n")
 
-        if projects:
-            content = f"# Projects\n\n{projects}\n"
-            (SEEDS_DIR / "projects.md").write_text(content)
-            updated.append("projects")
-
-        if updated:
-            return f"Onboarding complete. Updated seed files: {', '.join(updated)}"
-        return "No information provided. Pass at least name or identity to get started."
+        return f"Onboarding complete. Seed files: {name}.md + claude.md"
 
     def _tool_update_seed(self, args: dict) -> str:
-        """Update a specific seed file."""
+        """Update a seed file. Pass 'user' to update the user's file, or 'claude' for claude.md."""
         file_name = args.get("file", "").strip().lower()
         content = args.get("content", "").strip()
 
+        valid = _valid_seed_files()
+
+        # Accept "user" as an alias for the user's actual name
+        if file_name == "user":
+            user_name = _get_user_name()
+            if user_name:
+                file_name = user_name
+            else:
+                return "Error: no user_name configured. Run memorable_onboard first."
+
         if not file_name:
-            return f"Error: 'file' is required. Valid options: {', '.join(sorted(VALID_SEED_FILES))}"
-        if file_name not in VALID_SEED_FILES:
-            return f"Error: unknown seed file '{file_name}'. Valid options: {', '.join(sorted(VALID_SEED_FILES))}"
+            return f"Error: 'file' is required. Valid options: {', '.join(sorted(valid))} (or 'user')"
+        if file_name not in valid:
+            return f"Error: unknown seed file '{file_name}'. Valid options: {', '.join(sorted(valid))} (or 'user')"
         if not content:
             return "Error: 'content' is required."
 
@@ -529,43 +555,31 @@ TOOLS = [
     },
     {
         "name": "memorable_onboard",
-        "description": "Set up Memorable with user identity and preferences. Populates seed files that are injected at every session start. Call this during first-time setup or when the user wants to update their profile.",
+        "description": "Set up Memorable with user's name. Creates {name}.md + claude.md seed files. The user's file contains everything about them; claude.md contains how to be with them.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": "User's name",
+                    "description": "User's first name (becomes the seed filename, e.g. 'matt' -> matt.md)",
                 },
-                "identity": {
+                "about": {
                     "type": "string",
-                    "description": "Free text about who the user is — background, personality, important facts",
-                },
-                "preferences": {
-                    "type": "string",
-                    "description": "How the user wants Claude to behave — tone, style, anti-patterns",
-                },
-                "people": {
-                    "type": "string",
-                    "description": "Important people in the user's life — names, relationships, context",
-                },
-                "projects": {
-                    "type": "string",
-                    "description": "Active projects and their status",
+                    "description": "Initial content for the user's seed file (markdown)",
                 },
             },
+            "required": ["name"],
         },
     },
     {
         "name": "memorable_update_seed",
-        "description": "Update a specific seed file (identity, preferences, people, or projects). Use this to modify one section without affecting others.",
+        "description": "Update a seed file. Three files: the user's file (pass 'user' or their name) for identity/people/projects, 'claude' for behavioral instructions, and 'now' for current state snapshot. Rewrite now.md alongside every anchor.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "file": {
                     "type": "string",
-                    "description": "Which seed file to update",
-                    "enum": ["identity", "preferences", "people", "projects"],
+                    "description": "Which seed file to update: 'user' (or the user's name), 'claude', or 'now'",
                 },
                 "content": {
                     "type": "string",

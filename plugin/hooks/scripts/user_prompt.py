@@ -118,7 +118,12 @@ def main():
                 "[Memorable] You've exchanged ~15 messages since your last anchor. "
                 "Please call the memorable_write_anchor tool now with a brief summary "
                 "of the conversation since the last anchor point. Include: what was "
-                "discussed, any decisions made, the current mood/energy, and any open threads."
+                "discussed, any decisions made, the current mood/energy, and any open threads. "
+                "Then rewrite now.md via memorable_update_seed(file='now') with a current "
+                "state snapshot: active projects & status, recent decisions, open threads, "
+                "emotional/mental state, and anything a future session needs to know. "
+                "If any stable life facts changed (job, relationships, people, projects), "
+                "also update the user's seed file via memorable_update_seed(file='user')."
             )
         else:
             # Save updated count
