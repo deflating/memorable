@@ -136,6 +136,17 @@ def main():
         lines.append("")
         lines.append("Do NOT skip this. Do NOT respond before reading these files.")
 
+        # Point to conversation transcripts for context recovery
+        transcripts_dir = DATA_DIR / "transcripts"
+        if transcripts_dir.exists():
+            transcript_files = sorted(transcripts_dir.glob("*.md"))
+            if transcript_files:
+                lines.append("")
+                lines.append("[Memorable] Conversation transcripts are available at:")
+                for tf in transcript_files:
+                    lines.append(f"  {tf}")
+                lines.append("Read the tail of these if you need to recall what was happening in a recent session, or if the user references a previous conversation.")
+
         # Add salient session note references
         notes_dir = DATA_DIR / "notes"
         if notes_dir.exists():
