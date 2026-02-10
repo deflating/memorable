@@ -17,7 +17,6 @@ from urllib.parse import parse_qs, urlparse
 DATA_DIR = Path.home() / ".memorable" / "data"
 SEEDS_DIR = DATA_DIR / "seeds"
 NOTES_DIR = DATA_DIR / "notes"
-ANCHORS_DIR = DATA_DIR / "anchors"
 CONFIG_PATH = Path.home() / ".memorable" / "config.json"
 
 UI_DIR = Path(__file__).resolve().parent.parent / "ui"
@@ -120,35 +119,6 @@ def load_all_notes():
     return notes
 
 
-def load_all_anchors():
-    """Return list of anchor dicts parsed from plain text .md files."""
-    anchors = []
-    if not ANCHORS_DIR.is_dir():
-        return anchors
-    for path in sorted(ANCHORS_DIR.glob("*.md")):
-        machine = path.stem
-        try:
-            text = path.read_text(encoding="utf-8")
-        except Exception:
-            continue
-        for line in text.splitlines():
-            line = line.strip()
-            if not line or not line.startswith("["):
-                continue
-            # Parse: [YYYY-MM-DD HH:MM] summary text
-            bracket_end = line.find("]")
-            if bracket_end < 0:
-                continue
-            ts_str = line[1:bracket_end]
-            summary = line[bracket_end + 1:].strip()
-            if not summary:
-                continue
-            anchors.append({
-                "ts": ts_str,
-                "summary": summary,
-                "machine": machine,
-            })
-    return anchors
 
 
 # -- API handlers ----------------------------------------------------------
@@ -180,13 +150,10 @@ def handle_put_seed(name, body):
 
 
 def handle_get_machines():
-    """Return sorted list of unique machine names across notes and anchors."""
+    """Return sorted list of unique machine names from notes."""
     machines = set()
     for machine, _ in load_jsonl_dir(NOTES_DIR):
         machines.add(machine)
-    if ANCHORS_DIR.is_dir():
-        for path in ANCHORS_DIR.glob("*.md"):
-            machines.add(path.stem)
     return 200, {"machines": sorted(machines)}
 
 
@@ -251,22 +218,8 @@ def handle_get_notes_tags():
     return 200, {"tags": tags}
 
 
-def handle_get_anchors(params):
-    session_filter = params.get("session", [""])[0]
-    machine_filter = params.get("machine", [""])[0]
-    anchors = load_all_anchors()
-
-    if machine_filter:
-        anchors = [a for a in anchors if a.get("machine") == machine_filter]
-    if session_filter:
-        anchors = [a for a in anchors if a.get("session") == session_filter]
-
-    return 200, {"anchors": anchors, "total": len(anchors)}
-
-
 def handle_get_stats():
     notes = load_all_notes()
-    anchors = load_all_anchors()
     seeds = load_seeds()
 
     all_tags = set()
@@ -283,7 +236,6 @@ def handle_get_stats():
 
     return 200, {
         "note_count": len(notes),
-        "anchor_count": len(anchors),
         "seed_count": len(seeds),
         "unique_tags": len(all_tags),
         "date_range": {
@@ -369,10 +321,6 @@ class MemorableHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/notes":
             status, data = handle_get_notes(params)
-            return self.send_json(status, data)
-
-        if path == "/api/anchors":
-            status, data = handle_get_anchors(params)
             return self.send_json(status, data)
 
         if path == "/api/stats":

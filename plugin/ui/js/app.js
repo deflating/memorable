@@ -1,12 +1,10 @@
 import { api, formatDate } from './utils.js';
 import { render as renderNotes } from './notes.js';
-import { render as renderAnchors } from './anchors.js';
 import { render as renderSeeds } from './seeds.js';
 
 // Tab renderers keyed by hash name
 const tabs = {
   notes:    renderNotes,
-  anchors:  renderAnchors,
   seeds:    renderSeeds,
 };
 
@@ -47,7 +45,6 @@ function loadStats() {
     if (bar && data) {
       const parts = [];
       if (data.note_count) parts.push(data.note_count + ' notes');
-      if (data.anchor_count) parts.push(data.anchor_count + ' anchors');
       if (data.seed_count) parts.push(data.seed_count + ' seeds');
       if (data.date_range && data.date_range.earliest) {
         parts.push(formatDate(data.date_range.earliest) + ' \u2013 ' + formatDate(data.date_range.latest));
